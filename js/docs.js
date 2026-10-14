@@ -1,0 +1,377 @@
+/* Documents made on the phone: PDFs, mind maps (flat + 3D views + outline in one PDF, like the
+   laptop) and PowerPoint presentations in the same 16 designs. Libraries load only when needed. */
+(function () {
+  const loaded = {};
+  function lib(src) {
+    if (!loaded[src]) loaded[src] = new Promise((res, rej) => {
+      const s = document.createElement('script'); s.src = src; s.onload = res;
+      s.onerror = () => rej(new Error('Could not load ' + src)); document.head.appendChild(s);
+    });
+    return loaded[src];
+  }
+  const jspdf = async () => { await lib('vendor/jspdf.umd.min.js'); return window.jspdf.jsPDF; };
+  const pptx = async () => { await lib('vendor/pptxgen.bundle.js'); return window.PptxGenJS; };
+  const today = () => new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  const safe = s => String(s || '').replace(/[^\x20-\x7E -ÿ–—‘’“”•…]/g, '');
+  const fname = (t, ext) => (String(t || 'E.V.').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_').slice(0, 50) || 'EV') +
+    '_' + new Date().toISOString().slice(0, 10) + '.' + ext;
+
+  /* ---------------- PDF document ---------------- */
+  // doc: {title, subtitle, sections:[{heading, paragraphs[], bullets[]}], sources:[{title,url}]}
+  async function pdf(doc) {
+    const J = await jspdf();
+    const p = new J({ unit: 'pt', format: 'a4' }), W = 595, H = 842, M = 54;
+    let y = 0;
+    const header = () => {
+      p.setFillColor(9, 14, 33); p.rect(0, 0, W, 112, 'F');
+      p.setFillColor(240, 44, 72); p.rect(0, 112, W, 4, 'F');
+      p.setTextColor(243, 245, 255); p.setFont('helvetica', 'bolditalic'); p.setFontSize(24);
+      p.text(p.splitTextToSize(safe(doc.title).toUpperCase(), W - 2 * M).slice(0, 2), M, 52);
+      p.setFont('helvetica', 'normal'); p.setFontSize(10); p.setTextColor(152, 165, 197);
+      p.text(safe(doc.subtitle || ('Prepared by E.V. · ' + today())), M, 96);
+      y = 146;
+    };
+    const need = h => { if (y + h > H - 60) { footer(); p.addPage(); y = 64; } };
+    const footer = () => { p.setFontSize(8); p.setTextColor(140, 150, 175); p.text('E.V. · ' + safe(doc.title), M, H - 28);
+      p.text(String(p.getNumberOfPages()), W - M, H - 28, { align: 'right' }); };
+    header();
+    for (const s of doc.sections || []) {
+      if (s.heading) {
+        need(40); p.setFont('helvetica', 'bold'); p.setFontSize(14); p.setTextColor(240, 44, 72);
+        p.text(safe(s.heading), M, y); y += 20;
+      }
+      p.setFont('helvetica', 'normal'); p.setFontSize(11); p.setTextColor(30, 34, 52);
+      for (const para of s.paragraphs || []) {
+        const lines = p.splitTextToSize(safe(para), W - 2 * M);
+        for (const l of lines) { need(15); p.text(l, M, y); y += 15; }
+        y += 6;
+      }
+      for (const b of s.bullets || []) {
+        const lines = p.splitTextToSize(safe(b), W - 2 * M - 16);
+        lines.forEach((l, i) => { need(15); if (!i) { p.setFillColor(63, 139, 255); p.circle(M + 4, y - 4, 2, 'F'); } p.text(l, M + 16, y); y += 15; });
+        y += 3;
+      }
+      y += 10;
+    }
+    if ((doc.sources || []).length) {
+      need(40); p.setFont('helvetica', 'bold'); p.setFontSize(12); p.setTextColor(240, 44, 72); p.text('Sources', M, y); y += 18;
+      p.setFont('helvetica', 'normal'); p.setFontSize(9); p.setTextColor(80, 90, 120);
+      doc.sources.forEach((s, i) => { const l = p.splitTextToSize(`${i + 1}. ${safe(s.title)} ${s.url || ''}`, W - 2 * M); l.forEach(x => { need(12); p.text(x, M, y); y += 12; }); });
+    }
+    footer();
+    return { blob: p.output('blob'), name: fname(doc.title, 'pdf') };
+  }
+
+  async function imagesToPdf(files, title) {
+    const J = await jspdf();
+    let p = null;
+    for (const f of files) {
+      const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
+      const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+      const land = img.width > img.height, W = land ? 842 : 595, H = land ? 595 : 842;
+      if (!p) p = new J({ unit: 'pt', format: 'a4', orientation: land ? 'l' : 'p' }); else p.addPage('a4', land ? 'l' : 'p');
+      const k = Math.min((W - 40) / img.width, (H - 40) / img.height);
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').drawImage(img, 0, 0);
+      p.addImage(c.toDataURL('image/jpeg', 0.9), 'JPEG', (W - img.width * k) / 2, (H - img.height * k) / 2, img.width * k, img.height * k);
+    }
+    return { blob: p.output('blob'), name: fname(title || 'Images', 'pdf') };
+  }
+
+  async function textToPdf(title, text) {
+    return pdf({ title, sections: [{ paragraphs: String(text).split(/\n{2,}/) }] });
+  }
+
+  /* ---------------- mind map ---------------- */
+  const PALETTE = ['#ff2b3d', '#ff7a2e', '#8a5cff', '#3f7dff', '#7fe6ff', '#ff5a8a', '#5dcaa5', '#ffc857'];
+  const FONT = '-apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif';
+  function build(spec) {
+    const root = { name: spec.title || 'Mind map', level: 0, children: [], x: 0, y: 0, z: 0 };
+    (spec.branches || []).forEach((b, i) => {
+      const col = PALETTE[i % PALETTE.length];
+      const n1 = { name: b.name || '?', level: 1, parent: root, color: col, children: [] }; root.children.push(n1);
+      (b.children || []).forEach(c => {
+        const n2 = { name: c.name || '?', level: 2, parent: n1, color: col, children: [] }; n1.children.push(n2);
+        (c.children || []).forEach(g => n2.children.push({ name: g.name || '?', level: 3, parent: n2, color: col, children: [] }));
+      });
+    });
+    return root;
+  }
+  const leaves = n => n.children.length ? n.children.reduce((s, c) => s + leaves(c), 0) : 1;
+  function* walk(n) { yield n; for (const c of n.children) yield* walk(c); }
+  function layout(root) {
+    const radii = [0, 430, 820, 1120], sx = 1.45, sy = 1.0;
+    const place = (n, a0, a1) => {
+      n.angle = (a0 + a1) / 2; const r = radii[Math.min(n.level, 3)];
+      n.x = Math.cos(n.angle) * r * sx; n.y = Math.sin(n.angle) * r * sy;
+      let a = a0;
+      for (const c of n.children) { const span = (a1 - a0) * leaves(c) / Math.max(1, leaves(n)); place(c, a, a + span); a += span; }
+    };
+    const start = -Math.PI / 2 - Math.PI / Math.max(3, root.children.length);
+    place(root, start, start + 2 * Math.PI); root.x = root.y = 0;
+    root.children.forEach((b, i) => {                       // lift it into 3D for the rendered views
+      const tilt = ((i % 3) - 1) * 0.55 + (i % 2 ? 0.25 : -0.25);
+      for (const n of walk(b)) n.z = tilt * 260 * n.level + Math.sin(n.angle * 3) * 80 * (n.level - 1);
+    });
+    root.z = 0;
+  }
+  function background(c, W, H) {
+    c.fillStyle = '#04050d'; c.fillRect(0, 0, W, H);
+    const g = c.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, H * .75);
+    g.addColorStop(0, '#46143a'); g.addColorStop(.35, '#281232'); g.addColorStop(.7, '#120c26'); g.addColorStop(1, '#04050d');
+    c.fillStyle = g; c.fillRect(0, 0, W, H);
+    let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < W * H / 9000; i++) { const b = 60 + rnd() * 120; c.fillStyle = `rgb(${b},${b},${Math.min(255, b + 30)})`; c.fillRect(rnd() * W, rnd() * H, 2, 2); }
+  }
+  function wrap(c, text, maxw, lines = 3) {
+    const out = []; let cur = '';
+    for (const w of String(text).split(/\s+/)) { const t = (cur + ' ' + w).trim(); if (c.measureText(t).width <= maxw || !cur) cur = t; else { out.push(cur); cur = w; } }
+    if (cur) out.push(cur); return out.slice(0, lines);
+  }
+  function renderFlat(root, W = 2700, H = 1800) {
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const c = cv.getContext('2d');
+    background(c, W, H);
+    const cx = W / 2, cy = H / 2, s = W / 3600;
+    const all = [...walk(root)];
+    const k = Math.min((W / 2 - 330 * s) / Math.max(1, ...all.map(n => Math.abs(n.x))), (H / 2 - 140 * s) / Math.max(1, ...all.map(n => Math.abs(n.y))), s);
+    const P = n => [cx + n.x * k, cy + n.y * k];
+    c.lineCap = 'round';
+    for (const glow of [true, false]) for (const n of all) {
+      if (!n.parent) continue;
+      const [ax, ay] = P(n.parent), [bx, by] = P(n), d = Math.hypot(bx - ax, by - ay) * .45;
+      const c1 = n.parent.level ? [ax + Math.cos(n.angle) * d, ay + Math.sin(n.angle) * d] : [ax, ay];
+      const c2 = [bx - Math.cos(n.angle) * d * .6, by - Math.sin(n.angle) * d * .6];
+      c.strokeStyle = n.color; c.lineWidth = Math.max(3, 14 - n.level * 4) * s * (glow ? 2.6 : 1);
+      c.globalAlpha = glow ? .28 : 1; c.filter = glow ? `blur(${10 * s}px)` : 'none';
+      c.beginPath(); c.moveTo(ax, ay); c.bezierCurveTo(c1[0], c1[1], c2[0], c2[1], bx, by); c.stroke();
+    }
+    c.globalAlpha = 1; c.filter = 'none';
+    const fs = { 0: 64, 1: 40, 2: 31, 3: 26 };
+    for (const n of all) {
+      const [x, y] = P(n), lv = Math.min(n.level, 3), col = n.color || '#ff2b3d';
+      c.font = `${lv <= 2 ? 700 : 500} ${fs[lv] * s}px ${FONT}`;
+      if (n.level <= 1) {
+        const ls = wrap(c, n.level ? n.name : n.name.toUpperCase(), (n.level ? 330 : 520) * s), lh = fs[lv] * s * 1.15;
+        const tw = Math.max(...ls.map(l => c.measureText(l).width)), pw = tw + (n.level ? 56 : 90) * s, ph = lh * ls.length + (n.level ? 34 : 60) * s;
+        c.fillStyle = n.level ? '#161e58' : '#2e143c'; c.strokeStyle = col; c.lineWidth = (n.level ? 5 : 7) * s;
+        c.beginPath(); c.roundRect(x - pw / 2, y - ph / 2, pw, ph, n.level ? ph / 2 : 40 * s); c.fill(); c.stroke();
+        c.fillStyle = '#e9efff'; c.textAlign = 'center'; c.textBaseline = 'middle';
+        ls.forEach((l, i) => c.fillText(l, x, y - lh * ls.length / 2 + lh * i + lh / 2));
+      } else {
+        const r = (n.level === 2 ? 11 : 8) * s;
+        c.fillStyle = '#04050d'; c.strokeStyle = col; c.lineWidth = 4 * s; c.beginPath(); c.arc(x, y, r, 0, 7); c.fill(); c.stroke();
+        const left = x < cx, ls = wrap(c, n.name, (n.level === 2 ? 340 : 300) * s), lh = fs[lv] * s * 1.12, tx = left ? x - r - 12 * s : x + r + 12 * s;
+        c.textAlign = left ? 'right' : 'left'; c.textBaseline = 'middle';
+        ls.forEach((l, i) => { const ty = y - lh * (ls.length - 1) / 2 + lh * i; c.fillStyle = '#000'; c.fillText(l, tx + 2 * s, ty + 2 * s);
+          c.fillStyle = n.level === 2 ? '#e9efff' : '#cdd6f5'; c.fillText(l, tx, ty); });
+      }
+    }
+    c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.font = `500 ${26 * s}px ${FONT}`; c.fillStyle = '#7882af';
+    c.fillText('E.V. mind map · ' + today(), 60 * s, H - 50 * s);
+    return cv;
+  }
+  function render3d(root, yaw, pitch, title, W = 2700, H = 1800) {
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const c = cv.getContext('2d');
+    background(c, W, H);
+    const S = W / 3600, cx = W / 2, cy = H / 2 + 60 * S, all = [...walk(root)];
+    const span = Math.max(1, ...all.map(n => Math.abs(n.x)), ...all.map(n => Math.abs(n.y))), sc = 1850 / span, D = 3600, F = 2600;
+    const rot = (x, y, z) => { const cy_ = Math.cos(yaw), sy = Math.sin(yaw); [x, z] = [x * cy_ + z * sy, -x * sy + z * cy_];
+      const cp = Math.cos(pitch), sp = Math.sin(pitch); [y, z] = [y * cp - z * sp, y * sp + z * cp]; return [x, y, z]; };
+    const proj = (x, y, z) => { const [a, b, d] = rot(x * sc, y * sc * .9, z * sc); const s = F / (d + D); return [cx + a * s * S, cy + b * s * S, d, s]; };
+    const fy = 780 / sc;                                         // floor grid for depth
+    c.lineWidth = 2 * S;
+    for (let i = -10; i <= 10; i++) {
+      let a = proj(i * 160 / sc * 1.4, fy, -1600 / sc), b = proj(i * 160 / sc * 1.4, fy, 1600 / sc);
+      c.strokeStyle = 'rgba(63,125,255,.15)'; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+      a = proj(-1600 / sc * 1.4, fy, i * 160 / sc); b = proj(1600 / sc * 1.4, fy, i * 160 / sc);
+      c.strokeStyle = 'rgba(138,92,255,.15)'; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+    }
+    const pr = new Map(all.map(n => [n, proj(n.x, n.y, n.z)]));
+    const zs = all.map(n => pr.get(n)[2]), zmin = Math.min(...zs), zmax = Math.max(...zs) + 1e-6, depth = z => 1 - (z - zmin) / (zmax - zmin);
+    const far = [...all].sort((a, b) => pr.get(b)[2] - pr.get(a)[2]);
+    for (const glow of [true, false]) for (const n of far) {
+      if (!n.parent) continue;
+      const a = pr.get(n.parent), b = pr.get(n), dep = depth((a[2] + b[2]) / 2);
+      c.strokeStyle = n.color; c.globalAlpha = (110 + 145 * dep) / 255 * (glow ? .35 : 1); c.filter = glow ? `blur(${10 * S}px)` : 'none';
+      c.lineWidth = Math.max(2, (12 - n.level * 3) * (a[3] + b[3]) / 2 * 1.3) * S * (glow ? 2.4 : 1);
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2 - 30 * b[3] * S;
+      c.beginPath(); c.moveTo(a[0], a[1]); c.quadraticCurveTo(mx, my, b[0], b[1]); c.stroke();
+    }
+    c.globalAlpha = 1; c.filter = 'none';
+    for (const n of far) {
+      const [x, y, z, s] = pr.get(n), dep = depth(z), col = n.color || '#ff2b3d', lv = Math.min(n.level, 3);
+      const r = { 0: 80, 1: 44, 2: 26, 3: 18 }[lv] * s * 1.25 * S;
+      const halo = c.createRadialGradient(x, y, 0, x, y, r * 2.4); halo.addColorStop(0, col + '88'); halo.addColorStop(1, col + '00');
+      c.fillStyle = halo; c.globalAlpha = .5 + dep * .5; c.beginPath(); c.arc(x, y, r * 2.4, 0, 7); c.fill(); c.globalAlpha = 1;
+      const sph = c.createRadialGradient(x - r * .3, y - r * .35, r * .1, x, y, r);
+      sph.addColorStop(0, '#ffffff'); sph.addColorStop(.25, col); sph.addColorStop(1, shade(col, .35));
+      c.fillStyle = sph; c.beginPath(); c.arc(x, y, r, 0, 7); c.fill();
+      const fs = { 0: 58, 1: 38, 2: 29, 3: 24 }[lv] * Math.min(1.35, Math.max(.7, s * 1.1)) * S;
+      if (fs < 16 * S) continue;
+      let text = n.level === 0 ? n.name.toUpperCase() : n.name; if (text.length > 34) text = text.slice(0, 32) + '…';
+      c.font = `${n.level <= 2 ? 700 : 500} ${fs}px ${FONT}`; c.textBaseline = 'middle';
+      c.textAlign = n.level === 0 ? 'center' : 'left';
+      const tx = n.level === 0 ? x : x + r + 10 * S, ty = n.level === 0 ? y + r + fs * .9 : y;
+      c.globalAlpha = (150 + 105 * dep) / 255; c.fillStyle = '#000'; c.fillText(text, tx + 2 * S, ty + 2 * S);
+      c.fillStyle = '#e9efff'; c.fillText(text, tx, ty); c.globalAlpha = 1;
+    }
+    c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.font = `500 ${28 * S}px ${FONT}`; c.fillStyle = '#7882af';
+    c.fillText(title + ' · 3D view', 60 * S, H - 50 * S);
+    return cv;
+  }
+  function shade(hex, k) { const n = parseInt(hex.slice(1), 16); return `rgb(${(n >> 16 & 255) * k | 0},${(n >> 8 & 255) * k | 0},${(n & 255) * k | 0})`; }
+
+  async function mindmap(spec, wantJpg) {
+    const J = await jspdf();
+    const root = build(spec); layout(root);
+    const flat = renderFlat(root);
+    const views = [['front', 0, .22], ['from the right', .62, .42], ['from the left', -.7, .3]].map(([t, yaw, pitch]) => [t, render3d(root, yaw, pitch, root.name)]);
+    const p = new J({ unit: 'pt', format: [842, 595], orientation: 'l' });
+    const page = (cv, caption, first) => {
+      if (!first) p.addPage([842, 595], 'l');
+      p.setFillColor(4, 5, 13); p.rect(0, 0, 842, 595, 'F');
+      p.addImage(cv.toDataURL('image/jpeg', .9), 'JPEG', 0, 18, 842, 842 * cv.height / cv.width);
+      p.setTextColor(233, 239, 255); p.setFont('helvetica', 'bold'); p.setFontSize(12); p.text(safe(caption), 24, 16);
+    };
+    page(flat, root.name + ' · mind map', true);
+    views.forEach(([t, cv]) => page(cv, root.name + ' · 3D view ' + t));
+    p.addPage('a4', 'p');                                           // outline
+    let y = 70; p.setFont('helvetica', 'bolditalic'); p.setFontSize(22); p.setTextColor(240, 44, 72); p.text(safe(root.name), 50, y); y += 22;
+    p.setFont('helvetica', 'normal'); p.setFontSize(9); p.setTextColor(120, 130, 160); p.text('Mind map outline · prepared by E.V. · ' + today(), 50, y); y += 26;
+    const line = (t, lv) => { if (y > 790) { p.addPage('a4', 'p'); y = 60; } p.setFont('helvetica', lv === 1 ? 'bold' : 'normal');
+      p.setFontSize(lv === 1 ? 13 : 11); p.setTextColor(30, 34, 52); p.text((lv > 1 ? '• ' : '') + safe(t), 50 + (lv - 1) * 18, y); y += lv === 1 ? 20 : 16; };
+    for (const b of root.children) { line(b.name, 1); for (const c of b.children) { line(c.name, 2); for (const g of c.children) line(g.name, 3); } y += 6; }
+    const out = [{ blob: p.output('blob'), name: fname(root.name + ' mind map', 'pdf') }];
+    if (wantJpg) out.push({ blob: await new Promise(r => flat.toBlob(r, 'image/jpeg', .92)), name: fname(root.name + ' mind map', 'jpg') });
+    return out;
+  }
+
+  /* ---------------- presentations ---------------- */
+  const THEMES = [
+    ['ev', 'E.V. Night', '04050d', '1c1030', 'e9efff', 'b9c6f5', 'ff2b3d', '3f7dff', 'Arial', 'ev'],
+    ['neon', 'Midnight Neon', '0a0014', '1a0038', 'f5f3ff', 'c4b5fd', 'ff2bd6', '00e5ff', 'Arial', 'glow'],
+    ['aurora', 'Aurora', '06201f', '1b1446', 'effffa', 'a7e8d8', '5dfdcb', 'b28dff', 'Arial', 'circles'],
+    ['minimal', 'Minimal White', 'ffffff', 'ffffff', '1b1f33', '6b7090', '3f7dff', 'ff2b3d', 'Arial', 'minimal'],
+    ['corporate', 'Corporate Blue', 'f4f7fc', 'e8eef9', '10223f', '51607a', '1f5fbf', '00a3a3', 'Calibri', 'bars'],
+    ['sunset', 'Sunset', '2b0f2e', '7a2a2a', 'fff4ea', 'ffd3b0', 'ffd166', 'ff7a2e', 'Georgia', 'wave'],
+    ['forest', 'Forest', '0f2418', '1e3d2a', 'f1f8ec', 'bfd8b4', '9be564', 'f2c14e', 'Georgia', 'diagonal'],
+    ['ocean', 'Ocean', '031a2f', '0b4f6c', 'eaf8ff', '9fd3ea', '4cc9f0', 'f72585', 'Arial', 'wave'],
+    ['royal', 'Royal Gold', '0e0e10', '1d1a14', 'f7f1e1', 'cbbf9e', 'd4af37', 'f5e6b3', 'Palatino', 'frame'],
+    ['pastel', 'Pastel Dream', 'fdf2f8', 'eef4ff', '3b2a44', '7a6685', 'f472b6', '60a5fa', 'Arial', 'circles'],
+    ['mono', 'Monochrome', '111111', '1c1c1c', 'f2f2f2', 'a0a0a0', 'ffffff', '7a7a7a', 'Arial Black', 'minimal'],
+    ['retro', 'Retro 80s', '1a0b2e', '3d1466', 'fff0fb', 'f5b8e6', 'ff6ec7', 'fcee0c', 'Arial', 'grid'],
+    ['blueprint', 'Blueprint', '0b3d91', '0a3480', 'e8f1ff', 'b5cdf5', 'ffffff', 'ffd166', 'Courier New', 'grid'],
+    ['crimson', 'Crimson Bold', '1a0507', '4a0d14', 'fff1f1', 'f2b8bc', 'ff2b3d', 'ffb3b3', 'Arial Black', 'diagonal'],
+    ['mint', 'Mint Fresh', 'effaf5', 'e6f6fb', '0f3d2e', '4b7266', '10b981', '0ea5e9', 'Arial', 'dots'],
+    ['galaxy', 'Galaxy', '05010f', '1b0b3a', 'f3eefe', 'c9b8f5', 'a78bfa', 'f0abfc', 'Arial', 'stars']
+  ].map(([id, name, bg1, bg2, text, muted, accent, accent2, font, deco]) => ({ id, name, bg1, bg2, text, muted, accent, accent2, font, deco }));
+  function findTheme(q) {
+    if (!q) return THEMES[0];
+    q = String(q).toLowerCase();
+    return THEMES.find(t => t.id === q || t.name.toLowerCase() === q) || THEMES.find(t => t.name.toLowerCase().includes(q) || q.includes(t.id)) || THEMES[0];
+  }
+  function backdrop(t, big) {                 // gradient + decoration, drawn once per theme as the slide background
+    const W = 1600, H = 900, cv = document.createElement('canvas'); cv.width = W; cv.height = H; const c = cv.getContext('2d');
+    const g = c.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#' + t.bg1); g.addColorStop(1, '#' + t.bg2); c.fillStyle = g; c.fillRect(0, 0, W, H);
+    const A = '#' + t.accent, B = '#' + t.accent2; c.globalAlpha = .18;
+    switch (t.deco) {
+      case 'ev': c.strokeStyle = A; c.lineWidth = 2; for (let i = 0; i < 12; i++) { c.beginPath(); c.moveTo(0, 0); c.lineTo(Math.cos(i / 24 * Math.PI) * 900, Math.sin(i / 24 * Math.PI) * 900); c.stroke(); }
+        for (let r = 120; r < 900; r += 110) { c.beginPath(); c.arc(0, 0, r, 0, Math.PI / 2); c.stroke(); } break;
+      case 'glow': case 'stars': { const rg = c.createRadialGradient(W * .8, H * .2, 0, W * .8, H * .2, 600); rg.addColorStop(0, A); rg.addColorStop(1, 'transparent'); c.fillStyle = rg; c.fillRect(0, 0, W, H);
+        if (t.deco === 'stars') { c.globalAlpha = .7; c.fillStyle = '#fff'; for (let i = 0; i < 160; i++) c.fillRect((i * 997) % W, (i * 613) % H, 2, 2); } break; }
+      case 'circles': c.fillStyle = A; c.beginPath(); c.arc(W * .9, H * .15, 260, 0, 7); c.fill(); c.fillStyle = B; c.beginPath(); c.arc(W * .05, H * .95, 200, 0, 7); c.fill(); break;
+      case 'bars': c.globalAlpha = 1; c.fillStyle = A; c.fillRect(0, 0, W, 18); c.fillStyle = B; c.fillRect(0, 18, W * .3, 6); break;
+      case 'wave': c.fillStyle = A; c.beginPath(); c.moveTo(0, H); for (let x = 0; x <= W; x += 20) c.lineTo(x, H * .82 + Math.sin(x / 140) * 40); c.lineTo(W, H); c.fill(); break;
+      case 'diagonal': c.fillStyle = A; c.beginPath(); c.moveTo(W * .7, 0); c.lineTo(W, 0); c.lineTo(W, H * .5); c.fill(); break;
+      case 'frame': c.globalAlpha = .6; c.strokeStyle = A; c.lineWidth = 3; c.strokeRect(36, 36, W - 72, H - 72); break;
+      case 'grid': c.strokeStyle = B; c.lineWidth = 1; for (let x = 0; x < W; x += 60) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke(); } for (let y = 0; y < H; y += 60) { c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke(); }
+        if (t.id === 'retro' && big) { c.globalAlpha = .5; const sg = c.createLinearGradient(0, H * .3, 0, H * .7); sg.addColorStop(0, B); sg.addColorStop(1, A); c.fillStyle = sg; c.beginPath(); c.arc(W / 2, H * .62, 220, Math.PI, 0); c.fill(); } break;
+      case 'dots': c.fillStyle = A; for (let x = 40; x < W; x += 50) for (let y = 40; y < H; y += 50) { c.beginPath(); c.arc(x, y, 3, 0, 7); c.fill(); } break;
+    }
+    return cv.toDataURL('image/jpeg', 0.86);          // JPEG keeps the .pptx small
+  }
+  async function wikiImage(q) {
+    try {
+      const r = await fetch('https://en.wikipedia.org/w/api.php?' + new URLSearchParams({ action: 'query', titles: q, prop: 'pageimages',
+        pithumbsize: '1200', format: 'json', redirects: '1', origin: '*' }));
+      const pages = (await r.json()).query?.pages || {};
+      const src = Object.values(pages).map(p => p.thumbnail?.source).find(Boolean);
+      if (!src) return null;
+      const b = await (await fetch(src)).blob();
+      return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); });
+    } catch (e) { return null; }
+  }
+  async function presentation(deck, themeQ, onStep) {
+    const P = await pptx(), t = findTheme(themeQ), pres = new P();
+    pres.layout = 'LAYOUT_WIDE'; pres.title = deck.title || 'Presentation'; pres.author = 'E.V.';
+    const bgBig = backdrop(t, true), bg = backdrop(t, false);
+    const TX = t.text, MU = t.muted, AC = t.accent, A2 = t.accent2, F = t.font;
+    const W = 13.333, H = 7.5;
+    const title = (s, txt, y = .55) => s.addText(String(txt || ''), { x: .7, y, w: W - 1.4, h: .9, fontFace: F, fontSize: 30, bold: true, color: TX, fit: 'shrink' });
+    const bullets = (s, list, x, y, w, h, size = 18) => s.addText((list || []).map(b => ({ text: String(b), options: { bullet: { code: '25A0' }, color: TX, paraSpaceAfter: 8 } })),
+      { x, y, w, h, fontFace: F, fontSize: size, color: TX, valign: 'top', fit: 'shrink' });
+    const accentBar = (s, y = 1.45) => s.addShape(pres.ShapeType.rect, { x: .7, y, w: 1.2, h: .07, fill: { color: AC }, line: { color: AC } });
+    const slides = deck.slides || [];
+    if (!slides.length || slides[0].layout !== 'title') slides.unshift({ layout: 'title', title: deck.title, subtitle: deck.subtitle });
+    for (let i = 0; i < slides.length; i++) {
+      const d = slides[i], L = d.layout || 'bullets', s = pres.addSlide();
+      onStep && onStep(i, slides.length);
+      s.background = { data: (L === 'title' || L === 'closing' || L === 'section') ? bgBig : bg };
+      if (L === 'title' || L === 'closing') {
+        s.addText(String(d.title || deck.title || ''), { x: .9, y: 2.3, w: W - 1.8, h: 1.8, fontFace: F, fontSize: 44, bold: true, color: TX, fit: 'shrink' });
+        s.addShape(pres.ShapeType.rect, { x: .95, y: 4.15, w: 1.6, h: .09, fill: { color: AC }, line: { color: AC } });
+        s.addText(String(d.subtitle || (L === 'title' ? 'Prepared by E.V. · ' + today() : 'Thank you')), { x: .9, y: 4.4, w: W - 1.8, h: .8, fontFace: F, fontSize: 20, color: MU });
+      } else if (L === 'section') {
+        s.addText(String(d.number || ''), { x: .9, y: 1.6, w: 3, h: 1.4, fontFace: F, fontSize: 80, bold: true, color: AC });
+        s.addText(String(d.title || ''), { x: .9, y: 3.1, w: W - 1.8, h: 1.2, fontFace: F, fontSize: 38, bold: true, color: TX, fit: 'shrink' });
+        s.addText(String(d.subtitle || ''), { x: .9, y: 4.3, w: W - 1.8, h: .8, fontFace: F, fontSize: 18, color: MU });
+      } else if (L === 'two_column' || L === 'comparison') {
+        title(s, d.title); accentBar(s);
+        [['left', .7], ['right', W / 2 + .2]].forEach(([k, x], j) => {
+          const col = d[k] || {};
+          if (L === 'comparison') s.addShape(pres.ShapeType.roundRect, { x: x - .1, y: 1.8, w: W / 2 - .8, h: 4.9, rectRadius: .15, fill: { color: j ? A2 : AC, transparency: 85 }, line: { color: j ? A2 : AC, width: 1 } });
+          s.addText(String(col.heading || ''), { x, y: 1.9, w: W / 2 - 1, h: .6, fontFace: F, fontSize: 22, bold: true, color: j ? A2 : AC });
+          bullets(s, col.bullets, x, 2.6, W / 2 - 1, 3.9, 17);
+        });
+      } else if (L === 'quote') {
+        s.addText('“', { x: .8, y: .8, w: 2, h: 2, fontFace: 'Georgia', fontSize: 140, color: AC });
+        s.addText(String(d.quote || ''), { x: 1.4, y: 2.0, w: W - 2.8, h: 2.8, fontFace: 'Georgia', fontSize: 30, italic: true, color: TX, fit: 'shrink' });
+        s.addText('— ' + (d.author || ''), { x: 1.4, y: 5.0, w: W - 2.8, h: .6, fontFace: F, fontSize: 18, color: MU });
+      } else if (L === 'stats') {
+        title(s, d.title); accentBar(s);
+        const st = (d.stats || []).slice(0, 4), n = Math.max(1, st.length), w = (W - 1.4 - (n - 1) * .3) / n;
+        st.forEach((x, j) => {
+          const xx = .7 + j * (w + .3);
+          s.addShape(pres.ShapeType.roundRect, { x: xx, y: 2.0, w, h: 3.2, rectRadius: .15, fill: { color: AC, transparency: 88 }, line: { color: AC, width: 1 } });
+          s.addText(String(x.value || ''), { x: xx, y: 2.3, w, h: 1.6, align: 'center', fontFace: F, fontSize: String(x.value || '').length > 7 ? 34 : 48, bold: true, color: AC, fit: 'shrink' });
+          s.addText(String(x.label || ''), { x: xx + .2, y: 3.9, w: w - .4, h: 1.1, align: 'center', fontFace: F, fontSize: 15, color: TX, fit: 'shrink' });
+        });
+        if (d.note) s.addText(String(d.note), { x: .7, y: 5.6, w: W - 1.4, h: .7, fontFace: F, fontSize: 14, color: MU, italic: true });
+      } else if (L === 'timeline') {
+        title(s, d.title); accentBar(s);
+        const steps = (d.steps || []).slice(0, 6), n = Math.max(1, steps.length), x0 = 2.0, x1 = 11.3;
+        s.addShape(pres.ShapeType.line, { x: x0 - .5, y: 3.6, w: x1 - x0 + 1, h: 0, line: { color: MU, width: 2 } });
+        steps.forEach((st_, j) => {
+          const x = n === 1 ? (x0 + x1) / 2 : x0 + (x1 - x0) * j / (n - 1);
+          s.addShape(pres.ShapeType.ellipse, { x: x - .18, y: 3.42, w: .36, h: .36, fill: { color: j % 2 ? A2 : AC }, line: { color: TX, width: 1 } });
+          s.addText(String(st_.label || ''), { x: x - 1, y: 2.5, w: 2, h: .7, align: 'center', fontFace: F, fontSize: 16, bold: true, color: j % 2 ? A2 : AC, fit: 'shrink' });
+          s.addText(String(st_.text || ''), { x: x - 1, y: 4.0, w: 2, h: 2.2, align: 'center', valign: 'top', fontFace: F, fontSize: 13, color: TX, fit: 'shrink' });
+        });
+      } else if (L === 'image') {
+        title(s, d.title); accentBar(s);
+        const img = d.image_query ? await wikiImage(d.image_query) : null;
+        bullets(s, d.bullets, .7, 1.9, img ? 6.2 : W - 1.4, 4.8);
+        if (img) { s.addImage({ data: img, x: 7.3, y: 1.8, w: 5.3, h: 4.6, sizing: { type: 'cover', w: 5.3, h: 4.6 } });
+          s.addText('Image: Wikipedia, ' + d.image_query, { x: 7.3, y: 6.45, w: 5.3, h: .35, fontFace: F, fontSize: 9, color: MU }); }
+      } else {
+        title(s, d.title); accentBar(s);
+        bullets(s, d.bullets, .7, 1.9, W - 1.4, 4.9, 20);
+      }
+      if (d.notes) s.addNotes(String(d.notes));
+      if (L !== 'title') s.addText(String(i + 1), { x: W - 1, y: H - .55, w: .5, h: .35, align: 'right', fontFace: F, fontSize: 10, color: MU });
+    }
+    const blob = await pres.write({ outputType: 'blob' });
+    return { blob, name: fname(deck.title, 'pptx'), theme: t.name };
+  }
+
+  EV.docs = { pdf, imagesToPdf, textToPdf, mindmap, presentation, THEMES, findTheme, fname };
+})();
