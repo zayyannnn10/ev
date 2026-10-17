@@ -224,7 +224,7 @@ VOICE CONVERSATION (sound like a real person on a call)
         hooks.onTool && hooks.onTool(c.name); EV.log('live tool: ' + c.name);
         toolBusy++;
         let out; try { out = await EV.tools.run(c.name, c.args || {}); } finally { toolBusy--; }
-        if (out && out.needs_tap) hooks.onOffer && hooks.onOffer({ label: out.label || 'Open', url: out.open || '', action: out.action || '', question: out.question || '' });
+        if (out && out.needs_tap) hooks.onOffer && hooks.onOffer({ label: out.label || 'Open', url: out.open || '', action: out.action || '', question: out.question || '', args: out.args || null });
         responses.push({ id: c.id, name: c.name, response: out && typeof out === 'object' ? out : { result: String(out) } });
       }
       send({ toolResponse: { functionResponses: responses } });

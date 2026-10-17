@@ -61,7 +61,7 @@ ${older.map(m => (m.role === 'user' ? 'User: ' : 'E.V.: ') + m.text).join('\n')}
       for (const c of calls) {
         hooks.onTool && hooks.onTool(c.name);
         const out = await EV.tools.run(c.name, c.args || {});
-        if (out && out.needs_tap) offers.push({ label: out.label || 'Open', url: out.open || '', action: out.action || '', question: out.question || '' });
+        if (out && out.needs_tap) offers.push({ label: out.label || 'Open', url: out.open || '', action: out.action || '', question: out.question || '', args: out.args || null });
         responses.push({ functionResponse: { name: c.name, response: out && typeof out === 'object' ? out : { result: String(out) } } });
       }
       contents.push({ role: 'user', parts: responses });

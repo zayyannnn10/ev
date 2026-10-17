@@ -12,6 +12,7 @@
   const jspdf = async () => { await lib('vendor/jspdf.umd.min.js'); return window.jspdf.jsPDF; };
   const pptx = async () => { await lib('vendor/pptxgen.bundle.js'); return window.PptxGenJS; };
   const today = () => new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  const plain = s => safe(String(s || '').replace(/\*\*/g, ''));
   const safe = s => String(s || '').replace(/[^\x20-\x7E -ÿ–—‘’“”•…]/g, '');
   const fname = (t, ext) => (String(t || 'E.V.').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_').slice(0, 50) || 'EV') +
     '_' + new Date().toISOString().slice(0, 10) + '.' + ext;
@@ -35,19 +36,31 @@
     const footer = () => { p.setFontSize(8); p.setTextColor(140, 150, 175); p.text('E.V. · ' + safe(doc.title), M, H - 28);
       p.text(String(p.getNumberOfPages()), W - M, H - 28, { align: 'right' }); };
     header();
+    if (doc.one_line) {                                   // the whole idea in one sentence, in a soft box
+      p.setFont('helvetica', 'bold'); p.setFontSize(12);
+      const L = p.splitTextToSize(plain(doc.one_line), W - 2 * M - 28);
+      p.setFillColor(255, 241, 243); p.rect(M, y - 14, W - 2 * M, L.length * 16 + 16, 'F');
+      p.setFillColor(240, 44, 72); p.rect(M, y - 14, 4, L.length * 16 + 16, 'F');
+      p.setTextColor(30, 34, 52); L.forEach(l => { p.text(l, M + 16, y + 2); y += 16; }); y += 22;
+    }
     for (const s of doc.sections || []) {
       if (s.heading) {
         need(40); p.setFont('helvetica', 'bold'); p.setFontSize(14); p.setTextColor(240, 44, 72);
-        p.text(safe(s.heading), M, y); y += 20;
+        p.text(plain(s.heading), M, y); y += 20;
       }
       p.setFont('helvetica', 'normal'); p.setFontSize(11); p.setTextColor(30, 34, 52);
       for (const para of s.paragraphs || []) {
-        const lines = p.splitTextToSize(safe(para), W - 2 * M);
+        const lines = p.splitTextToSize(plain(para), W - 2 * M);
         for (const l of lines) { need(15); p.text(l, M, y); y += 15; }
         y += 6;
       }
+      (s.steps || []).forEach((st_, n) => {
+        const lines = p.splitTextToSize(plain(st_), W - 2 * M - 22);
+        lines.forEach((l, i) => { need(15); if (!i) { p.setFont('helvetica', 'bold'); p.setTextColor(240, 44, 72); p.text((n + 1) + '.', M, y); p.setFont('helvetica', 'normal'); p.setTextColor(30, 34, 52); } p.text(l, M + 22, y); y += 15; });
+        y += 4;
+      });
       for (const b of s.bullets || []) {
-        const lines = p.splitTextToSize(safe(b), W - 2 * M - 16);
+        const lines = p.splitTextToSize(plain(b), W - 2 * M - 16);
         lines.forEach((l, i) => { need(15); if (!i) { p.setFillColor(63, 139, 255); p.circle(M + 4, y - 4, 2, 'F'); } p.text(l, M + 16, y); y += 15; });
         y += 3;
       }
@@ -245,6 +258,73 @@
     return out;
   }
 
+  /* ---------------- Word documents (.docx) ---------------- */
+  const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+  function zip(files, type) {                       // stored (uncompressed) zip: [{name, text}]
+    const enc = new TextEncoder(), out = [], cen = []; let off = 0;
+    for (const f of files) {
+      const name = enc.encode(f.name), d = enc.encode(f.text), crc = crc32(d);
+      const h = new DataView(new ArrayBuffer(30)), c = new DataView(new ArrayBuffer(46));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(12, 0x21, true);
+      h.setUint32(14, crc, true); h.setUint32(18, d.length, true); h.setUint32(22, d.length, true); h.setUint16(26, name.length, true);
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(14, 0x21, true);
+      c.setUint32(16, crc, true); c.setUint32(20, d.length, true); c.setUint32(24, d.length, true); c.setUint16(28, name.length, true); c.setUint32(42, off, true);
+      out.push(new Uint8Array(h.buffer), name, d); cen.push(new Uint8Array(c.buffer), name); off += 30 + name.length + d.length;
+    }
+    const size = cen.reduce((a, x) => a + x.length, 0), e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, size, true); e.setUint32(16, off, true);
+    return new Blob([...out, ...cen, new Uint8Array(e.buffer)], { type });
+  }
+  const xe = s => String(s == null ? '' : s).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const runs = t => String(t || '').split('**').map((x, i) => x ? `<w:r>${i % 2 ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t xml:space="preserve">${xe(x)}</w:t></w:r>` : '').join('');
+  const para = (style, t, lead) => `<w:p>${style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ''}${lead ? `<w:r><w:rPr><w:b/><w:color w:val="E11D48"/></w:rPr><w:t xml:space="preserve">${xe(lead)}</w:t></w:r>` : ''}${runs(t)}</w:p>`;
+  // doc: {title, subtitle, one_line, sections:[{heading, paragraphs[], bullets[], steps[]}], sources:[{title,url}]}
+  async function docx(doc) {
+    let body = para('Title', doc.title || 'Notes') + para('Subtitle', doc.subtitle || ('Prepared by E.V. · ' + today()));
+    if (doc.one_line) body += para('Callout', doc.one_line);
+    for (const sc of doc.sections || []) {
+      if (sc.heading) body += para('Heading1', sc.heading);
+      (sc.paragraphs || []).forEach(t => { body += para('', t); });
+      (sc.steps || []).forEach((t, i) => { body += para('Bullet', t, (i + 1) + '.  '); });
+      (sc.bullets || []).forEach(t => { body += para('Bullet', t, '•  '); });
+    }
+    if ((doc.sources || []).length) { body += para('Heading1', 'Sources'); doc.sources.forEach((x, i) => { body += para('Small', `${i + 1}. ${x.title || ''} ${x.url || ''}`); }); }
+    const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"', X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    const st = (id, name, ppr, rpr, extra = '') => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/>${extra}<w:qFormat/><w:pPr>${ppr}</w:pPr><w:rPr>${rpr}</w:rPr></w:style>`;
+    const styles = `${X}<w:styles ${W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri" w:eastAsia="Calibri"/><w:sz w:val="23"/><w:szCs w:val="23"/><w:lang w:val="en-GB"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="288" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>`
+      + `<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/><w:rPr><w:color w:val="1F2937"/></w:rPr></w:style>`
+      + st('Title', 'Title', '<w:spacing w:after="40"/>', '<w:b/><w:color w:val="0F172A"/><w:sz w:val="48"/><w:szCs w:val="48"/>')
+      + st('Subtitle', 'Subtitle', '<w:spacing w:after="280"/>', '<w:color w:val="6B7280"/><w:sz w:val="21"/>')
+      + st('Heading1', 'heading 1', '<w:keepNext/><w:spacing w:before="300" w:after="100"/><w:outlineLvl w:val="0"/>', '<w:b/><w:color w:val="E11D48"/><w:sz w:val="30"/><w:szCs w:val="30"/>')
+      + st('Callout', 'Callout', '<w:pBdr><w:left w:val="single" w:sz="24" w:space="8" w:color="E11D48"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="FFF1F3"/><w:spacing w:before="80" w:after="240"/><w:ind w:left="170" w:right="113"/>', '<w:b/><w:sz w:val="25"/>')
+      + st('Bullet', 'List Item', '<w:spacing w:after="80"/><w:ind w:left="567" w:hanging="340"/>', '')
+      + st('Small', 'Small', '<w:spacing w:after="40"/>', '<w:color w:val="6B7280"/><w:sz w:val="18"/>') + '</w:styles>';
+    const files = [
+      { name: '[Content_Types].xml', text: `${X}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>` },
+      { name: '_rels/.rels', text: `${X}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>` },
+      { name: 'docProps/core.xml', text: `${X}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xe(doc.title)}</dc:title><dc:creator>E.V.</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString().slice(0, 19)}Z</dcterms:created></cp:coreProperties>` },
+      { name: 'word/_rels/document.xml.rels', text: `${X}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
+      { name: 'word/styles.xml', text: styles },
+      { name: 'word/document.xml', text: `${X}<w:document ${W}><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>` },
+    ];
+    return { blob: zip(files, DOCX), name: fname(doc.title, 'docx') };
+  }
+  /* the same notes as a page on the E.V. screen (the "Open" button) */
+  function docHtml(doc) {
+    const h = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const b = t => h(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    let o = `<article class="doc"><h1>${b(doc.title)}</h1><p class="sub">${h(doc.subtitle || '')}</p>${doc.one_line ? `<p class="callout">${b(doc.one_line)}</p>` : ''}`;
+    for (const sc of doc.sections || []) {
+      if (sc.heading) o += `<h2>${b(sc.heading)}</h2>`;
+      (sc.paragraphs || []).forEach(t => { o += `<p>${b(t)}</p>`; });
+      if ((sc.steps || []).length) o += '<ol>' + sc.steps.map(t => `<li>${b(t)}</li>`).join('') + '</ol>';
+      if ((sc.bullets || []).length) o += '<ul>' + sc.bullets.map(t => `<li>${b(t)}</li>`).join('') + '</ul>';
+    }
+    return o + '</article>';
+  }
+
   /* ---------------- presentations ---------------- */
   const THEMES = [
     ['ev', 'E.V. Night', '04050d', '1c1030', 'e9efff', 'b9c6f5', 'ff2b3d', '3f7dff', 'Arial', 'ev'],
@@ -425,5 +505,5 @@
     }).join('');
   }
 
-  EV.docs = { pdf, imagesToPdf, textToPdf, mindmap, presentation, deckHtml, wikiImage, THEMES, findTheme, fname, lib };
+  EV.docs = { pdf, docx, docHtml, imagesToPdf, textToPdf, mindmap, presentation, deckHtml, wikiImage, THEMES, findTheme, fname, lib };
 })();

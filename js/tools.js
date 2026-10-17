@@ -128,7 +128,7 @@
     });
 
   /* ---------- camera and pictures ---------- */
-  def('camera', "The phone camera inside E.V.: open, close, what_is_this (identify what the user shows), read_page (read a page or handwritten notes; save_as pdf/txt/note).",
+  def('camera', "The phone camera inside E.V.: open, close, what_is_this (identify what the user shows), read_page (read a page or handwritten notes; save_as pdf/txt/note). To EXPLAIN a question or homework on paper, use the study tool with source camera instead.",
     obj({ action: str('', ['open', 'close', 'what_is_this', 'read_page']), question: str(''), save_as: str('', ['none', 'pdf', 'txt', 'note']) }, ['action']),
     async a => {
       if (a.action === 'close') { ui().camera.close(); return { result: 'Camera closed.' }; }
@@ -209,15 +209,73 @@ Return JSON {"title": str, "summary": str (3-4 sentences, spoken style), "sectio
       return { result: 'Research started. It shows in Files while it runs; I\'ll tell you when the report is ready. Keep E.V. open.' };
     });
 
-  def('create_pdf', 'Make a well-formatted PDF document about a topic (researched with Google).',
-    obj({ topic: str(''), details: str('') }, ['topic']),
+  def('create_pdf', 'Make a well-formatted document about a topic (researched with Google): format pdf (default) or docx (Word). For study notes use the study tool instead.',
+    obj({ topic: str(''), details: str(''), format: str('', ['pdf', 'docx']) }, ['topic']),
     async a => {
       const facts = await G.search(a.topic + ' ' + (a.details || ''), 'Collect accurate, current facts, figures and context for a document about this.').catch(() => ({ text: '', sources: [] }));
       const doc = await G.ask(`Write a well-structured document about "${a.topic}". ${a.details || ''}
 Return JSON {"title": str, "sections": [{"heading": str, "paragraphs": [str], "bullets": [str]}]} (4-7 sections). Use these facts:\n${facts.text.slice(0, 20000)}`, { json: true });
-      const names = await saveFile(await EV.docs.pdf({ title: doc.title || a.topic, sections: doc.sections, sources: facts.sources }), 'pdf');
+      const d = { title: doc.title || a.topic, sections: doc.sections, sources: facts.sources }, word = a.format === 'docx';
+      const names = await saveFile(await (word ? EV.docs.docx(d) : EV.docs.pdf(d)), word ? 'docx' : 'pdf', { doc: d });
       ui().fileOffers(openShare(names));
-      return { result: 'PDF ready in the stash: ' + names[0] + '. Open and Share buttons are on the screen.' };
+      return { result: (word ? 'Word file' : 'PDF') + ' ready in the stash: ' + names[0] + '. Open and Share buttons are on the screen.' };
+    });
+
+  /* ---------- study help ---------- */
+  const LEVEL = { brief: 'Keep it short and to the point: about one page.', easy: 'Very simple words and short sentences, like explaining to a smart 14-year-old; about one to two pages.',
+                  detailed: 'Thorough but still clear: three to five pages with more depth, examples and exam-style detail.' };
+  const SECTIONS = {
+    question: 'What the question is asking (in plain words); What you need to know (the ideas behind it); Step by step (put the working in "steps"); The answer; Why it works and an exam tip; Try a similar one (a similar question, then its answer in brackets)',
+    quiz: 'Questions (10, mixed multiple choice and short answer, numbered in "steps"); Answers (each answer with a one-line reason, in "steps")',
+    topic: 'The big idea (in simple words); Breaking it down (each part as a bullet "Part: what it means"); How it works, step by step (in "steps"); Everyday example; Key terms (bullets "Term: meaning"); Common mistakes; Quick recap (3-5 bullets); Test yourself (3-5 questions with the answers in brackets)',
+  };
+  async function studyDoc(a, img) {
+    const kind = a.mode === 'question' ? 'question' : a.mode === 'quiz' ? 'quiz' : 'topic';
+    const what = a.mode === 'question' ? (a.question || (img ? 'the question in the picture' : a.topic)) : (a.topic || a.question);
+    const prompt = `You are a kind, clear tutor making study notes for a student.
+${kind === 'question' ? 'Explain this question and how to solve it' : kind === 'quiz' ? 'Make a practice quiz on' : 'Topic'}: ${what}
+${LEVEL[a.level] || LEVEL.easy} Write in English unless the topic is in another language. Short sentences, simple words. Put key terms in **bold**. Be accurate; never invent facts.
+Use these sections (adapt or drop any that don't fit): ${SECTIONS[kind]}.${img ? '\nThe question is in the picture: read it carefully first (handwriting too) and quote it in the first section.' : ''}
+Return JSON {"title": str (short), "one_line": str (the whole idea or answer in one simple sentence), "sections": [{"heading": str, "paragraphs": [str], "bullets": [str], "steps": [str]}]}`;
+    const doc = await G.ask(prompt, { json: true, parts: img ? [{ inlineData: { mimeType: 'image/jpeg', data: img } }] : [] });
+    doc.title = doc.title || what || 'Study notes';
+    doc.subtitle = (kind === 'quiz' ? 'Practice quiz' : 'Study notes') + ' by E.V. · ' + new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    return doc;
+  }
+  def('study', "Study help (the main reason she uses E.V.): explain or break down a topic simply, explain a question and what is happening in it (typed, on paper with the camera, or a photo from her gallery), make study notes as a Word file (docx) or PDF, or a practice quiz. output voice (default) = you explain it out loud yourself; docx / pdf / both = also make the notes file (only when she asks for notes, a file, Word, docx or PDF). source camera when the question is on paper in front of the camera, photo when it is a picture in her gallery.",
+    obj({ mode: str('', ['explain', 'breakdown', 'question', 'notes', 'quiz']), topic: str('the topic or subject'), question: str('the question, if she typed or said it'),
+          level: str('', ['brief', 'easy', 'detailed']), output: str('', ['voice', 'docx', 'pdf', 'both']), source: str('', ['text', 'camera', 'photo']) }, ['mode']),
+    async a => {
+      let img = a._image || null; const out = a.output || (a.mode === 'notes' ? 'docx' : 'voice');
+      if (a.source === 'camera' && !img) {
+        img = await ui().camera.capture();
+        if (!img) return { needs_tap: true, label: 'Open camera', action: 'camera', result: 'Tap "Open camera", point it at the question, then ask again.' };
+      }
+      if (a.source === 'photo' && !img) return { needs_tap: true, label: 'Choose the photo', action: 'study_photo', args: { ...a, source: 'photo' }, result: 'Tap "Choose the photo" and pick the picture of the question.' };
+      if (out === 'voice') {
+        const how = 'Teach like a kind, clear tutor: first the big idea in one simple sentence, then break it into small parts in simple words with an everyday example, then a short recap. '
+          + (a.mode === 'question' ? 'For a question: say what it is asking, the idea behind it, go through the steps one by one, give the answer, then a quick tip. Explain HOW to get the answer, not only the answer. ' : '')
+          + ({ brief: 'Keep it brief: about thirty seconds.', detailed: 'Go into detail, like a short lesson.' }[a.level] || 'Keep it easy and clear, about a minute.')
+          + ' At the end, check she understood ("Does that make sense?") and offer Word or PDF notes.';
+        if (!img) return { how_to_explain: how, instruction: 'Explain it yourself now, out loud, in that way. Speak naturally; no lists read out.' };
+        const ex = await G.vision(`You are a kind tutor. Read the question in this picture carefully (handwriting too). Then explain: what it is asking, the idea behind it, the steps to solve it one by one, the answer, and a short tip. ${LEVEL[a.level] || LEVEL.easy} Plain text, no markdown.`, img);
+        return { question_explained: ex.slice(0, 4000), instruction: how + ' Use this worked explanation and say it in your own natural spoken words, step by step.' };
+      }
+      const job = ui().job((a.mode === 'quiz' ? 'Quiz: ' : 'Notes: ') + (a.topic || a.question || 'your question'));
+      (async () => {
+        try {
+          job.update(.2, 'Writing the notes');
+          const doc = await studyDoc(a, img);
+          job.update(.75, out === 'pdf' ? 'Making the PDF' : 'Making the Word file');
+          let first = null;
+          if (out === 'docx' || out === 'both') first = await saveFile(await EV.docs.docx(doc), 'docx', { doc });
+          if (out === 'pdf' || out === 'both') { const n = await saveFile(await EV.docs.pdf(doc), 'pdf', { doc }); first = first || n; }
+          job.done('Ready: ' + first[0]);
+          const kind = out === 'both' ? 'as a Word file and a PDF' : out === 'pdf' ? 'as a PDF' : 'as a Word file';
+          ui().announce(`Your ${a.mode === 'quiz' ? 'quiz' : 'notes'} on ${doc.title} ${a.mode === 'quiz' ? 'is' : 'are'} ready ${kind}. ${doc.one_line || ''}`, openShare(first));
+        } catch (e) { job.fail(e.message); }
+      })();
+      return { result: `Making the ${out === 'both' ? 'Word and PDF' : out === 'pdf' ? 'PDF' : 'Word'} ${a.mode === 'quiz' ? 'quiz' : 'notes'} now (about half a minute). Meanwhile explain the main idea to her out loud in two or three simple sentences.` };
     });
 
   /* ---------- presentations and mind maps ---------- */
@@ -404,7 +462,7 @@ Return JSON: {"title": str, "branches": [{"name": str, "children": [{"name": str
   function normalize(t, args) {                // the model sometimes sends {"done": true} instead of {"action": "done"}
     const props = t.decl.parameters.properties || {}, out = {};
     for (const [k, v] of Object.entries(args || {})) {
-      if (k in props) out[k] = v;
+      if (k in props || (k === '_image' && typeof v === 'string')) out[k] = v;      // _image: a photo the app itself passes in
       else if (props.action && props.action.enum && props.action.enum.includes(k) && v === true && !('action' in args)) out.action = k;
       else if (props.text && !('text' in args) && typeof v === 'string') out.text = v;
     }

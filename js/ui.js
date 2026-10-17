@@ -54,6 +54,7 @@
   function runOfferAction(o) {
     if (o.action === 'camera') return showCamera();
     if (o.action === 'pick_image') { pendingQuestion = o.question; return $('pickImg').click(); }
+    if (o.action === 'study_photo') { pendingStudy = o.args || { mode: 'question' }; return $('pickImg').click(); }
     if (o.action === 'open_file') return openFile(o.id);
     if (o.action === 'share_file') return shareFile(o.id);
   }
@@ -374,9 +375,22 @@
     if (!fromOpen) camera.open().then(ok => { if (!ok) $('camBox').innerHTML = '<div class="cam-off">Camera blocked. Allow it in Settings → E.V. → Camera, then try again.</div>'; });
     else ['camSharp', 'camSoft'].forEach(id => { $(id).srcObject = camera.stream; $(id).play().catch(() => {}); });
   }
+  let pendingStudy = null;                          // a question photo for the study tool
   $('pickImg').onchange = async e => {
-    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const f = e.target.files[0]; e.target.value = ''; if (!f) { pendingStudy = null; return; }
     const b64 = await shrink(f); close();
+    if (pendingStudy) {
+      const args = { ...pendingStudy, _image: b64 }; pendingStudy = null; offers([]);
+      setSense('thinking'); $('senseHint').textContent = 'Reading the question…';
+      try {
+        const r = await EV.tools.run('study', args);
+        if (r.question_explained) {
+          if (liveOn && EV.live.open) EV.live.sendNote('She picked a photo of a question. ' + r.instruction + ' Worked explanation: ' + r.question_explained);
+          else { EV.agent.remember('ev', r.question_explained); say(r.question_explained); }
+        } else { setSense(liveOn ? 'listening' : 'idle'); if (r.result) brief(r.result.split(' Meanwhile')[0], { label: 'E.V.' }); if (r.error) toast(r.error); }
+      } catch (er) { setSense('idle'); toast('Could not read the photo: ' + er.message); }
+      return;
+    }
     ask(pendingQuestion || 'Look at this picture and tell me what matters in it. If it is a screenshot, read it and tell me what I am looking at.', [{ b64, mime: 'image/jpeg' }]);
   };
   function shrink(file) {
@@ -475,7 +489,9 @@
     v.querySelector('header').onclick = e => { const b = e.target.closest('button'); if (!b) return; b.dataset.a === 'share' ? shareFile(id) : closeViewer(); };
     const body = v.querySelector('.vbody');
     try {
-      if (ext === 'pptx' && rec.meta && rec.meta.deck) {
+      if (ext === 'docx' && rec.meta && rec.meta.doc) {
+        body.innerHTML = EV.docs.docHtml(rec.meta.doc);
+      } else if (ext === 'pptx' && rec.meta && rec.meta.deck) {
         body.innerHTML = EV.docs.deckHtml(rec.meta.deck, rec.meta.theme);
         body.querySelectorAll('img[data-q]').forEach(async im => { const src = await EV.docs.wikiImage(im.dataset.q); if (src) im.src = src; else im.remove(); });
       } else if (ext === 'pdf') {
