@@ -267,7 +267,11 @@ VOICE CONVERSATION (sound like a real person on a call)
     sendNote(`Continue exactly where you stopped (finish the sentence you were in the middle of). No greeting, no recap of what you already said, no questions. About ${mins} minute${mins === 1 ? '' : 's'} of the lecture remain${lecture.final ? '; this is the last part, so wrap up with a short recap at the end' : ''}.`);
   }
 
-  function sendText(text) { lastTyped = text; turnText = ''; lastUserWords = text; lastHeardAt = Date.now(); send({ clientContent: { turns: [{ role: 'user', parts: [{ text }] }], turnComplete: true } }); EV.agent.remember('user', text); bumpIdle(); }
+  function sendText(text, note) {                 // note: an instruction sent with this message (not saved as her words)
+    lastTyped = text; turnText = ''; lastUserWords = text; lastHeardAt = Date.now();
+    const parts = note ? [{ text: '[System note, not from the user] ' + note }, { text }] : [{ text }];
+    send({ clientContent: { turns: [{ role: 'user', parts }], turnComplete: true } }); EV.agent.remember('user', text); bumpIdle();
+  }
 
   /* hang up after 25 quiet seconds, like the laptop going to sleep (saves the free allowance) */
   function bumpIdle() {

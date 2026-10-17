@@ -603,8 +603,9 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
       <div class="row"><span>Fall asleep after<small>minutes of quiet (0 = never)</small></span><input type="number" id="sSleep" min="0" max="120" value="${s.autoSleep}"></div>
       <div class="sect">Brain</div>
       <div class="row"><span>Gemini key<small>${key ? 'Saved on this phone · ends …' + esc(key.slice(-4)) : 'Not set'}</small></span><button class="mini" id="sKey" type="button">Change</button></div>
+      ${st.data.profile ? `<div class="row"><span>Personal welcome<small>For ${esc(st.data.profile.name || 'you')} · active</small></span><button class="mini" id="sWelcome" type="button">Show again</button></div>` : ''}
       <div class="sect">From the laptop (one time)</div>
-      <div class="row"><span>Copy name, contacts, Spotify<small>Laptop on, same Wi-Fi, 6-digit code from the install page</small></span><button class="mini" id="sImport" type="button">Enter code</button></div>
+      <div class="row"><span>Gift code or laptop code<small>Paste a gift code, or the 6-digit code from laptop E.V.</small></span><button class="mini" id="sImport" type="button">Enter code</button></div>
       <div class="row"><span>Spotify<small>${EV.spotify.connected() ? 'Connected on this phone' : 'Not connected'}</small></span><button class="mini" id="sSpot" type="button">${EV.spotify.connected() ? 'Disconnect' : 'How to connect'}</button></div>
       <div class="sect">Contacts</div><div id="cList"></div>
       <form class="task-form" id="cAdd"><input id="cName" placeholder="Name" required><input id="cNum" placeholder="+92…" inputmode="tel" required><button>Add</button></form>
@@ -628,6 +629,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     $('sSleep').onchange = e => { s.autoSleep = Math.max(0, +e.target.value || 0); save(); };
     $('sKey').onclick = () => showSetup(true);
     $('sImport').onclick = () => importFromLaptop();
+    if ($('sWelcome')) $('sWelcome').onclick = () => { close(); showWelcome(); };
     $('sSpot').onclick = () => { if (EV.spotify.connected()) { st.data.spotify = null; save(); showSettings(); toast('Spotify disconnected on the phone.'); }
       else open('Connect Spotify.', '<p>On the laptop, say <b>"Hey E.V., connect Spotify for my phone"</b> and log in. Then open the install page on the laptop and type its 6-digit code here under <b>Copy name, contacts, Spotify</b>.</p>', 'help'); };
     const renderC = () => { $('cList').innerHTML = st.data.contacts.length ? st.data.contacts.map((c, i) => `<div class="row"><span>${esc(c.name)}<small>${esc(c.number || c.email || '')}</small></span><button class="mini" data-i="${i}" type="button">Remove</button></div>`).join('') : '<div class="empty">No contacts yet.</div>';
@@ -663,6 +665,8 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     $('suName').value = st.data.settings.name || ''; $('suKey').value = ''; $('suErr').textContent = '';
     $('suTitle').innerHTML = changeKey ? 'New <span>key.</span>' : 'Suit <span>up.</span>';
     $('suGo').onclick = async () => {
+      const pasted = [$('suPin').value, $('suName').value, $('suKey').value].map(giftIn).find(Boolean) || '';
+      if (pasted) { $('suPin').value = pasted; if (giftIn($('suName').value)) $('suName').value = ''; if (giftIn($('suKey').value)) $('suKey').value = ''; }
       const key = $('suKey').value.trim(), name = $('suName').value.trim();
       if (key.length < 20) { $('suErr').textContent = 'That does not look like a Gemini key. It usually starts with “AIza”.'; return; }
       $('suGo').disabled = true; $('suGo').textContent = 'Checking the key…'; $('suErr').textContent = '';
@@ -678,14 +682,23 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     $('suSkip').hidden = !changeKey; $('suSkip').onclick = () => { s.hidden = true; };
     $('suPinRow').hidden = !!changeKey;
   }
-  function readGift(code) {                         // "EVGIFT1:" + base64 of the welcome pack
-    const raw = code.replace(/^\s*EVGIFT1:/i, '').replace(/[^A-Za-z0-9+/=]/g, '');
-    const bytes = Uint8Array.from(atob(raw), c => c.charCodeAt(0));
-    return JSON.parse(new TextDecoder().decode(bytes));
+  // "EVGIFT1:" + base64 of the welcome pack; found anywhere in the pasted text (WhatsApp can add invisible marks or words)
+  const giftIn = t => { const m = String(t || '').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g, '').match(/EVGIFT1\s*:\s*([A-Za-z0-9+/=][A-Za-z0-9+/=\s]*)/i);
+    return m && m[1].replace(/\s+/g, '').length >= 40 ? 'EVGIFT1:' + m[1].trim() : ''; };
+  function readGift(code) {                        // the code may be followed by other words: take as many pieces as decode
+    const parts = giftIn(code).slice(8).split(/\s+/);
+    const dec = c => { try { let raw = c.replace(/=+$/, ''); raw += '==='.slice((raw.length + 3) % 4);
+      const j = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(raw), x => x.charCodeAt(0)))); return j && (j.profile || j.name) ? j : null; } catch (e) { return null; } };
+    for (let k = parts.length; k >= 1; k--) {
+      const c = parts.slice(0, k).join('');
+      for (let cut = c.length; cut >= Math.max(40, c.length - 400); cut--) { const j = dec(c.slice(0, cut)); if (j) return j; }   // words stuck to the end
+    }
+    throw new Error('incomplete');
   }
   async function importFromLaptop(code) {
     code = (code || prompt('Gift code, or the 6-digit code from laptop E.V.:') || '').trim();
-    const gift = /^EVGIFT1:/i.test(code);
+    const gift = !!giftIn(code);
+    if (gift) code = giftIn(code);
     if (!gift) { code = code.replace(/\D/g, ''); if (code.length !== 6) { if (code) toast('That is not a gift code or a 6-digit code.'); return; } }
     try {
       let j;
@@ -702,6 +715,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
       (j.contacts || []).forEach(c => { if (!st.data.contacts.some(x => x.name.toLowerCase() === c.name.toLowerCase())) st.data.contacts.push(c); });
       if (j.spotify && j.spotify.refresh_token) st.data.spotify = j.spotify;
       st.save(); greet();
+      if (j.profile) { EV.log('welcome pack added for ' + (j.profile.name || '?')); if (!$('setup').hidden || !st.key.get()) return; close(); showWelcome(); return; }
       if (!j.profile) toast(`Copied${j.name ? ' your name,' : ''} ${(j.contacts || []).length} contacts${j.spotify ? ' and Spotify' : ''} from the laptop.`);
       if (sheetName === 'settings') showSettings();
     } catch (e) { toast(gift ? "Couldn't read the code: " + e.message + '.' : "Couldn't reach the laptop. It must be on, with E.V. running, on the same Wi-Fi. (" + e.message + ')'); }
@@ -786,10 +800,10 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     try {
       await EV.live.start(liveHooks(), { mic: micOn() && !typed });
       const pf = st.data.profile;
-      if (pf && pf.greeting && !greetedThisLaunch && !typed) {     // the startup line, every time E.V. starts
-        greetedThisLaunch = true; EV.live.sendNote('E.V. just started. Greet her now with exactly: "' + pf.greeting + '" Then listen.');
-      }
-      if (typed) { EV.live.sendText(typed); brief('“' + typed + '”', { user: true }); setSense('thinking'); $('senseHint').textContent = 'Thinking…'; }
+      const greetNow = pf && pf.greeting && !greetedThisLaunch;      // the startup line, every time E.V. starts
+      if (greetNow) greetedThisLaunch = true;
+      if (greetNow && !typed) EV.live.sendNote('E.V. just started. Greet her now with exactly: "' + pf.greeting + '" Then listen.');
+      if (typed) { EV.live.sendText(typed, greetNow ? 'E.V. just started. Begin your reply with exactly: "' + pf.greeting + '" Then answer her message below.' : ''); brief('“' + typed + '”', { user: true }); setSense('thinking'); $('senseHint').textContent = 'Thinking…'; }
     } catch (e) {
       liveOn = false; EV.log('live unavailable, using the backup: ' + e.message);
       if (e.name === 'NotAllowedError') { setSense('idle'); brief('I need the microphone. Allow it in Settings → E.V. (or tap the mask again and press Allow).'); return; }
@@ -843,6 +857,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
   $('sleepToggle').onclick = () => { V.unlock(); touch(); if (senseState === 'sleeping') { setSense('idle'); idleBrief(); } else { if (rec) rec.stop(true); if (liveOn) EV.live.close('sleep'); V.stop(); setSense('sleeping'); } };
   $('composer').addEventListener('submit', e => {
     e.preventDefault(); const q = $('message').value.trim(); if (!q) return; $('message').value = ''; V.unlock();
+    if (giftIn(q)) return importFromLaptop(giftIn(q));
     if (!st.key.get()) return showSetup(false);
     thwip();
     if (useLive()) { try { EV.live.unlock(); } catch (e) {} if (liveOn) { EV.live.sendText(q); brief('“' + q + '”', { user: true }); setSense('thinking'); return; } return startLive(q); }
@@ -895,7 +910,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
   if (!st.key.get() || !st.data.settings.setupDone) showSetup(false);
   else {
     const away = Date.now() - (st.data.lastSeen || 0);
-    if (st.data.lastSeen && away > 6 * 3600e3) { const open = st.data.tasks.filter(t => !t.done).length;
+    if (st.data.lastSeen && away > 6 * 3600e3 && !(st.data.profile && st.data.profile.greeting)) { const open = st.data.tasks.filter(t => !t.done).length;
       brief(`Welcome back. ${open ? open + ' mission' + (open > 1 ? 's' : '') + ' waiting.' : 'No missions waiting.'}`, { label: 'E.V.' }); }
   }
   setInterval(() => { st.data.lastSeen = Date.now(); st.save(); }, 60000); st.data.lastSeen = Date.now(); st.save();
