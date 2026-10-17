@@ -161,3 +161,11 @@
 .sl ul{margin:0;padding:0;list-style:none}.sl li{padding-left:1.3em;position:relative;margin-bottom:.4em}
 .sl li:before{content:'';position:absolute;left:.15em;top:.42em;width:.42em;height:.42em;background:currentColor}
 .notes{font-size:12px;color:#a4b1ce;margin:0 2px 18px;line-height:1.45}
+
+/* Word notes in the viewer, and their file icon */
+.file .ic.docx{background:#10213f;color:#7fb2ff}
+.doc{background:#fff;color:#1f2937;border-radius:10px;padding:26px 22px 30px;font:15px/1.6 -apple-system,Segoe UI,Calibri,sans-serif}
+.doc h1{font-size:24px;line-height:1.2;margin:0 0 4px;color:#0f172a}.doc .sub{color:#6b7280;font-size:12.5px;margin:0 0 16px}
+.doc .callout{background:#fff1f3;border-left:4px solid #e11d48;padding:10px 12px;font-weight:600;border-radius:4px}
+.doc h2{color:#e11d48;font-size:17px;margin:22px 0 6px}.doc p{margin:0 0 10px}
+.doc ul,.doc ol{margin:0 0 12px;padding-left:22px}.doc li{margin-bottom:6px}.doc ol li::marker{color:#e11d48;font-weight:700}
