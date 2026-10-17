@@ -1,6 +1,6 @@
 /* Phone E.V. offline copy: everything the app needs is kept on the iPhone, so it opens with the laptop
    off. When the laptop is reachable, newer files are fetched in the background for next time. */
-const VERSION = '1.0.2610172222';
+const VERSION = '1.0.2610172246';
 const CACHE = 'ev-phone-' + VERSION;
 const FILES = ['./', 'index.html', 'css/app.css', 'manifest.webmanifest',
   'js/store.js', 'js/gemini.js', 'js/voice.js', 'js/prompt.js', 'js/docs.js', 'js/spotify.js', 'js/tools.js', 'js/agent.js', 'js/live.js', 'js/ui.js',
