@@ -370,8 +370,60 @@
       if (L !== 'title') s.addText(String(i + 1), { x: W - 1, y: H - .55, w: .5, h: .35, align: 'right', fontFace: F, fontSize: 10, color: MU });
     }
     const blob = await pres.write({ outputType: 'blob' });
-    return { blob, name: fname(deck.title, 'pptx'), theme: t.name };
+    return { blob, name: fname(deck.title, 'pptx'), theme: t.name, themeId: t.id };
   }
 
-  EV.docs = { pdf, imagesToPdf, textToPdf, mindmap, presentation, THEMES, findTheme, fname };
+  /* the same slides drawn on the E.V. screen (the "Open" button): positions follow the .pptx above */
+  function deckHtml(deck, themeQ) {
+    const t = findTheme(themeQ), W = 13.333, H = 7.5, F = t.font, h = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const bgBig = backdrop(t, true), bg = backdrop(t, false);
+    const pt = n => (n * 100 / 960).toFixed(3) + 'cqw';                     // PowerPoint points -> share of the slide width
+    const box = (x, y, w, hh, css, html) => `<div class="bx" style="left:${x / W * 100}%;top:${y / H * 100}%;width:${w / W * 100}%;height:${hh / H * 100}%;${css}">${html}</div>`;
+    const txt = (size, color, more = '') => `font-family:${F},sans-serif;font-size:${pt(size)};color:#${color};${more}`;
+    const title = d => box(.7, .55, W - 1.4, .9, txt(30, t.text, 'font-weight:700'), h(d.title)) + box(.7, 1.45, 1.2, .07, `background:#${t.accent}`, '');
+    const list = (items, x, y, w, hh, size) => box(x, y, w, hh, txt(size, t.text), '<ul>' + (items || []).map(b => `<li>${h(b)}</li>`).join('') + '</ul>');
+    const slides = deck.slides || [];
+    return slides.map((d, i) => {
+      const L = d.layout || 'bullets', big = L === 'title' || L === 'closing' || L === 'section';
+      let in_ = '';
+      if (L === 'title' || L === 'closing') {
+        in_ = box(.9, 2.3, W - 1.8, 1.8, txt(44, t.text, 'font-weight:700;display:flex;align-items:flex-end'), `<span>${h(d.title || deck.title)}</span>`) +
+          box(.95, 4.15, 1.6, .09, `background:#${t.accent}`, '') +
+          box(.9, 4.4, W - 1.8, .8, txt(20, t.muted), h(d.subtitle || (L === 'title' ? 'Prepared by E.V. · ' + today() : 'Thank you')));
+      } else if (L === 'section') {
+        in_ = box(.9, 1.6, 3, 1.4, txt(80, t.accent, 'font-weight:700;line-height:1'), h(d.number)) + box(.9, 3.1, W - 1.8, 1.2, txt(38, t.text, 'font-weight:700'), h(d.title)) +
+          box(.9, 4.3, W - 1.8, .8, txt(18, t.muted), h(d.subtitle));
+      } else if (L === 'two_column' || L === 'comparison') {
+        in_ = title(d) + [['left', .7], ['right', W / 2 + .2]].map(([k, x], j) => {
+          const col = d[k] || {}, c = j ? t.accent2 : t.accent;
+          return (L === 'comparison' ? box(x - .1, 1.8, W / 2 - .8, 4.9, `background:#${c}26;border:1px solid #${c};border-radius:${pt(11)}`, '') : '') +
+            box(x, 1.9, W / 2 - 1, .6, txt(22, c, 'font-weight:700'), h(col.heading)) + list(col.bullets, x, 2.6, W / 2 - 1, 3.9, 17);
+        }).join('');
+      } else if (L === 'quote') {
+        in_ = box(.8, .8, 2, 2, `font-family:Georgia,serif;font-size:${pt(140)};color:#${t.accent};line-height:1`, '“') +
+          box(1.4, 2.0, W - 2.8, 2.8, `font-family:Georgia,serif;font-style:italic;font-size:${pt(30)};color:#${t.text}`, h(d.quote)) + box(1.4, 5.0, W - 2.8, .6, txt(18, t.muted), '— ' + h(d.author));
+      } else if (L === 'stats') {
+        const st = (d.stats || []).slice(0, 4), n = Math.max(1, st.length), w = (W - 1.4 - (n - 1) * .3) / n;
+        in_ = title(d) + st.map((x, j) => { const xx = .7 + j * (w + .3);
+          return box(xx, 2.0, w, 3.2, `background:#${t.accent}1f;border:1px solid #${t.accent};border-radius:${pt(11)}`, '') +
+            box(xx, 2.3, w, 1.6, txt(String(x.value || '').length > 7 ? 34 : 48, t.accent, 'font-weight:700;text-align:center'), h(x.value)) +
+            box(xx + .2, 3.9, w - .4, 1.1, txt(15, t.text, 'text-align:center'), h(x.label)); }).join('') +
+          (d.note ? box(.7, 5.6, W - 1.4, .7, txt(14, t.muted, 'font-style:italic'), h(d.note)) : '');
+      } else if (L === 'timeline') {
+        const steps = (d.steps || []).slice(0, 6), n = Math.max(1, steps.length), x0 = 2.0, x1 = 11.3;
+        in_ = title(d) + box(x0 - .5, 3.59, x1 - x0 + 1, .02, `background:#${t.muted}`, '') + steps.map((q, j) => {
+          const x = n === 1 ? (x0 + x1) / 2 : x0 + (x1 - x0) * j / (n - 1), c = j % 2 ? t.accent2 : t.accent;
+          return box(x - .18, 3.42, .36, .36, `background:#${c};border-radius:50%;border:1px solid #${t.text}`, '') +
+            box(x - 1, 2.5, 2, .7, txt(16, c, 'font-weight:700;text-align:center'), h(q.label)) + box(x - 1, 4.0, 2, 2.2, txt(13, t.text, 'text-align:center'), h(q.text));
+        }).join('');
+      } else if (L === 'image') {
+        in_ = title(d) + list(d.bullets, .7, 1.9, d.image_query ? 6.2 : W - 1.4, 4.8, 18) +
+          (d.image_query ? box(7.3, 1.8, 5.3, 4.6, 'border-radius:4px;background:#0003', `<img alt="" data-q="${h(d.image_query)}" style="width:100%;height:100%;object-fit:cover">`) : '');
+      } else in_ = title(d) + list(d.bullets, .7, 1.9, W - 1.4, 4.9, 20);
+      if (L !== 'title') in_ += box(W - 1, H - .55, .5, .35, txt(10, t.muted, 'text-align:right'), String(i + 1));
+      return `<div class="sl" style="background-image:url(${big ? bgBig : bg})">${in_}</div>${d.notes ? `<p class="notes">${h(d.notes)}</p>` : ''}`;
+    }).join('');
+  }
+
+  EV.docs = { pdf, imagesToPdf, textToPdf, mindmap, presentation, deckHtml, wikiImage, THEMES, findTheme, fname, lib };
 })();

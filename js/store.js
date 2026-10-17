@@ -60,9 +60,9 @@
     });
   }
   const files = {
-    async put(name, blob, kind) {
+    async put(name, blob, kind, meta) {
       const id = uid();
-      await tx('readwrite', s => s.put({ id, name, blob, type: blob.type, created: Date.now() }));
+      await tx('readwrite', s => s.put({ id, name, blob, type: blob.type, created: Date.now(), meta: meta || null }));
       data.files.unshift({ id, name, kind: kind || '', type: blob.type, size: blob.size, created: Date.now() });
       save(); return id;
     },

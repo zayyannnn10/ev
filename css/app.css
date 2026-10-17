@@ -135,3 +135,29 @@
 .welcome h2{margin:0;font-weight:850;font-style:italic;text-transform:uppercase;font-size:40px;line-height:1;letter-spacing:-1.5px}
 .welcome p{margin:0;color:#dfe6fb;font-size:17px;line-height:1.5;max-width:300px}
 .welcome .btn{max-width:260px;margin-top:14px}
+
+/* slide styles in the stash */
+.styles{display:grid;grid-template-columns:repeat(4,1fr);gap:9px 8px;margin-top:12px}
+.sty{padding:0;background:none;border:0;text-align:center;color:inherit;font:inherit;cursor:pointer}
+.sty i{display:block;aspect-ratio:16/10;border-radius:9px;background:linear-gradient(135deg,var(--b1),var(--b2));border:1px solid #ffffff26;position:relative;overflow:hidden;transition:transform .2s}
+.sty i em{position:absolute;left:13%;top:30%;width:56%;height:9%;border-radius:2px;background:var(--tx);opacity:.9}
+.sty i u{position:absolute;left:13%;top:47%;width:24%;height:6%;border-radius:2px;background:var(--a)}
+.sty i:after{content:'';position:absolute;right:-12%;bottom:-22%;width:48%;aspect-ratio:1;border-radius:50%;background:var(--a2);opacity:.38}
+.sty span{display:block;font-size:10.5px;margin-top:5px;line-height:1.2;color:#c7d1ea}
+.sty:active i{transform:scale(.95)}
+.sty.on i{outline:2px solid #ee2948;outline-offset:2px}
+.stycard.ask{border-color:#ee2948;box-shadow:0 0 0 1px #ee294855,0 8px 30px #ee294822}
+.file .mini+.mini{margin-left:-4px}
+/* Open: a file full screen inside E.V. */
+.viewer{position:fixed;inset:0;z-index:90;background:#050811f5;display:flex;flex-direction:column;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.viewer header{display:flex;align-items:center;gap:8px;padding:calc(env(safe-area-inset-top) + 10px) 16px 10px;border-bottom:1px solid #2c4063}
+.viewer header b{flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.viewer .vbody{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:14px 16px calc(env(safe-area-inset-bottom) + 24px)}
+.viewer canvas,.viewer img.pg{display:block;width:100%;height:auto;margin:0 0 12px;border-radius:8px;background:#fff}
+.viewer .pdfframe{width:100%;height:100%;min-height:70vh;border:0;border-radius:8px;background:#fff}
+.vtext{white-space:pre-wrap;font-size:14px;line-height:1.55;color:#dfe6f7}
+.sl{position:relative;width:100%;aspect-ratio:16/9;container-type:inline-size;background-size:cover;background-position:center;border-radius:10px;overflow:hidden;margin:0 0 6px;box-shadow:0 6px 24px #0009}
+.sl .bx{position:absolute;overflow:hidden;line-height:1.18}
+.sl ul{margin:0;padding:0;list-style:none}.sl li{padding-left:1.3em;position:relative;margin-bottom:.4em}
+.sl li:before{content:'';position:absolute;left:.15em;top:.42em;width:.42em;height:.42em;background:currentColor}
+.notes{font-size:12px;color:#a4b1ce;margin:0 2px 18px;line-height:1.45}

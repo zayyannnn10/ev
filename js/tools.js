@@ -40,12 +40,13 @@
     return d.toISOString();
   }
 
-  async function saveFile(out, kind) {
-    const list = Array.isArray(out) ? out : [out], names = [];
-    for (const f of list) { await st.files.put(f.name, f.blob, kind); names.push(f.name); }
+  async function saveFile(out, kind, meta) {
+    const list = Array.isArray(out) ? out : [out], names = [], ids = [];
+    for (const f of list) { ids.push(await st.files.put(f.name, f.blob, kind, meta)); names.push(f.name); }
     ui().filesChanged();
-    return names;
+    return Object.assign(names, { ids });
   }
+  const openShare = names => names.ids && names.ids.length ? [{ label: 'Open', action: 'open_file', id: names.ids[0] }, { label: 'Share', action: 'share_file', id: names.ids[0] }] : [];
 
   /* ---------- missions, memory, notes ---------- */
   def('my_tasks', "The user's missions (tasks and reminders): add (text, due = full ISO 8601 local date-time like 2026-10-14T20:00 if a time was given; use the current date from the system instruction), list, done, delete, snooze (minutes).",
@@ -202,7 +203,7 @@ Return JSON {"title": str, "summary": str (3-4 sentences, spoken style), "sectio
           const uniq = [...new Map(sources.filter(s => s.url).map(s => [s.url, s])).values()].slice(0, 25);
           const names = await saveFile(await EV.docs.pdf({ title: doc.title || a.topic, subtitle: 'Research report by E.V. · ' + new Date().toLocaleDateString('en-GB'), sections: doc.sections, sources: uniq }), 'pdf');
           job.done('Report ready: ' + names[0]);
-          ui().announce(`Your research on ${a.topic} is done. ${doc.summary || ''} The full report is in Files.`);
+          ui().announce(`Your research on ${a.topic} is done. ${doc.summary || ''} The full report is in your stash.`, openShare(names));
         } catch (e) { job.fail(e.message); }
       })();
       return { result: 'Research started. It shows in Files while it runs; I\'ll tell you when the report is ready. Keep E.V. open.' };
@@ -215,20 +216,35 @@ Return JSON {"title": str, "summary": str (3-4 sentences, spoken style), "sectio
       const doc = await G.ask(`Write a well-structured document about "${a.topic}". ${a.details || ''}
 Return JSON {"title": str, "sections": [{"heading": str, "paragraphs": [str], "bullets": [str]}]} (4-7 sections). Use these facts:\n${facts.text.slice(0, 20000)}`, { json: true });
       const names = await saveFile(await EV.docs.pdf({ title: doc.title || a.topic, sections: doc.sections, sources: facts.sources }), 'pdf');
-      return { result: 'PDF ready in Files: ' + names[0], files_panel: true };
+      ui().fileOffers(openShare(names));
+      return { result: 'PDF ready in the stash: ' + names[0] + '. Open and Share buttons are on the screen.' };
     });
 
   /* ---------- presentations and mind maps ---------- */
-  def('presentation', 'PowerPoint presentations made on the phone. action create (topic, details, slides ~10, theme) or restyle (theme) the last one, or themes (list the 16 designs). Themes: ' + EV.docs.THEMES.map(t => t.name).join(', ') + '.',
+  def('presentation', 'PowerPoint presentations made on the phone. action create (topic, details, slides ~10, theme) or restyle (theme) the last one, or themes (list the 16 designs). Leave theme EMPTY unless the user named a style: the phone then shows the 16 styles to pick from. Themes: ' + EV.docs.THEMES.map(t => t.name).join(', ') + '.',
     obj({ action: str('', ['create', 'restyle', 'themes']), topic: str(''), details: str(''), slides: { type: I }, theme: str('') }, ['action']),
     async a => {
       if (a.action === 'themes') return { themes: EV.docs.THEMES.map(t => t.name) };
+      const PICK = 'Nothing has been made yet. The 16 styles are now on the screen in the stash. Ask the user, briefly and naturally, which style they would like: they can tap one or just say it (for example Midnight Neon, Minimal White or Galaxy). Then stop and wait; do not call presentation again until they name one.';
       if (a.action === 'restyle') {
         if (!st.data.lastDeck) return { error: 'There is no presentation to restyle yet.' };
-        const out = await EV.docs.presentation(st.data.lastDeck, a.theme); const names = await saveFile(out, 'pptx');
-        return { result: `Restyled in ${out.theme}: ${names[0]}` };
+        if (!a.theme) { ui().pickStyle('your last presentation', th => restyle(th, true)); return { result: PICK + ' When they say one, call presentation restyle with that theme.' }; }
+        ui().pickStyle(null);
+        return restyle(a.theme);
       }
       if (!a.topic) return { error: 'What is the presentation about?' };
+      if (!a.theme) { ui().pickStyle(a.topic, th => makeDeck({ ...a, theme: th }, true)); return { result: PICK + ' When they say one, call presentation create with the same topic and that theme.' }; }
+      ui().pickStyle(null);
+      return makeDeck(a);
+    });
+  async function restyle(theme, tapped) {
+    const out = await EV.docs.presentation(st.data.lastDeck, theme);
+    const names = await saveFile(out, 'pptx', { deck: st.data.lastDeck, theme: out.themeId });
+    if (tapped) ui().announce(`Done, your presentation is now in ${out.theme}.`, openShare(names)); else ui().fileOffers(openShare(names));
+    return { result: `Restyled in ${out.theme}: ${names[0]}. Open and Share buttons are on the screen.` };
+  }
+  function makeDeck(a, tapped) {
+      if (tapped) ui().styleChosen(EV.docs.findTheme(a.theme).name);
       const job = ui().job('Slides: ' + a.topic);
       (async () => {
         try {
@@ -246,13 +262,13 @@ image_query = an exact English Wikipedia article title that has a good photo. On
 Return JSON: {"title": str, "subtitle": str, "slides": [{"layout": str, ...fields, "notes": str}]}`, { json: true });
           st.data.lastDeck = deck; st.save();
           const out = await EV.docs.presentation(deck, a.theme || 'E.V. Night', (i, n) => job.update(.3 + .6 * i / n, 'Slide ' + (i + 1) + ' of ' + n));
-          const names = await saveFile(out, 'pptx');
+          const names = await saveFile(out, 'pptx', { deck, theme: out.themeId });
           job.done('Slides ready: ' + names[0]);
-          ui().announce(`Your presentation on ${a.topic} is ready, ${deck.slides.length} slides in ${out.theme}. It's in Files. Want a different design?`);
+          ui().announce(`Your presentation on ${a.topic} is ready, ${deck.slides.length} slides in ${out.theme}. Tap Open to see it, or Share to send or save it.`, openShare(names));
         } catch (e) { job.fail(e.message); }
       })();
-      return { result: 'Making the slides now. They appear in Files in about a minute.' };
-    });
+      return { result: `Making the slides now in ${EV.docs.findTheme(a.theme).name}. They appear in the stash in about a minute.` };
+  }
 
   def('mindmap', 'Mind map of a topic: ONE PDF with the flat map, three 3D rendered views and an outline. jpg=true only if the user asks for a JPG. size small, auto or detailed.',
     obj({ topic: str(''), details: str(''), size: str('', ['small', 'auto', 'detailed']), jpg: { type: B } }, ['topic']),
@@ -271,7 +287,7 @@ Return JSON: {"title": str, "branches": [{"name": str, "children": [{"name": str
           await new Promise(r => setTimeout(r, 50));
           const names = await saveFile(await EV.docs.mindmap(spec.branches ? spec : { title: a.topic, branches: spec }, !!a.jpg), 'pdf');
           job.done('Mind map ready: ' + names.join(', '));
-          ui().announce(`Your mind map on ${a.topic} is ready, with the 3D views. It's in Files.`);
+          ui().announce(`Your mind map on ${a.topic} is ready, with the 3D views. It's in your stash.`, openShare(names));
         } catch (e) { job.fail(e.message); }
       })();
       return { result: 'Drawing the mind map. It appears in Files in a moment.' };

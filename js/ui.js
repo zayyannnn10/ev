@@ -54,6 +54,8 @@
   function runOfferAction(o) {
     if (o.action === 'camera') return showCamera();
     if (o.action === 'pick_image') { pendingQuestion = o.question; return $('pickImg').click(); }
+    if (o.action === 'open_file') return openFile(o.id);
+    if (o.action === 'share_file') return shareFile(o.id);
   }
   function fmtDue(iso) {
     const d = new Date(iso), now = new Date(), tm = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -187,11 +189,13 @@
     return V.speak(text, { onend: () => { if (senseState === 'speaking') setSense('idle'); touch(); } });
   }
   let announceQ = [];
-  function announce(text) {                       // jobs finishing, reminders: speak when E.V. is free
+  function announce(text, offs) {                 // jobs finishing, reminders: speak when E.V. is free
     if (isOff()) return;
-    announceQ.push(text);
-    const go = () => { if (busy || rec || senseState === 'speaking' || senseState === 'thinking') return setTimeout(go, 1500); const t = announceQ.shift(); if (!t) return;
-      if (senseState === 'sleeping') { toast(t); return; } EV.agent.remember('ev', t); say(t); };
+    announceQ.push({ text, offs });
+    const go = () => { if (busy || rec || senseState === 'speaking' || senseState === 'thinking') return setTimeout(go, 1500); const q = announceQ.shift(); if (!q) return;
+      if (senseState === 'sleeping') { toast(q.text); if (q.offs) offers(q.offs); return; }
+      if (liveOn && EV.live.open) { brief(q.text, { label: 'E.V.' }); offers(q.offs || []); EV.live.sendNote('Something you were working on just finished. Tell the user now, in one or two short sentences in your own words: ' + q.text); return; }
+      EV.agent.remember('ev', q.text); say(q.text, q.offs); };
     go();
   }
 
@@ -224,7 +228,7 @@
   }
   $('close').onclick = close;
   $('overlay').onclick = e => { if (e.target === $('overlay')) close(); };
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('overlay').hidden) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { if ($('viewer')) return closeViewer(); if (!$('overlay').hidden) close(); } });
 
   /* nav: sliding pill */
   const nav = document.querySelector('.nav'), pill = document.createElement('span'); pill.className = 'nav-pill'; nav.prepend(pill);
@@ -422,23 +426,96 @@
     const run = jobs.filter(j => j.state === 'running').length, el = $('jobChip');
     el.hidden = !run; el.innerHTML = `<i></i>${run} job${run > 1 ? 's' : ''} running · Files`;
   }
-  function showFiles() { open('Your stash.', '<div id="fileList"></div><div class="btns2"><button class="pri" id="mkPdf">Photos → one PDF</button><button id="fRefresh">Refresh</button></div>', 'files'); renderFiles();
+  function showFiles() { open('Your stash.', '<div id="styleBox"></div><div id="fileList"></div><div class="btns2"><button class="pri" id="mkPdf">Photos → one PDF</button><button id="fRefresh">Refresh</button></div>', 'files'); renderFiles();
     $('mkPdf').onclick = () => $('pickConv').click(); $('fRefresh').onclick = renderFiles; }
+  /* slide styles: the same 16 designs as the laptop. E.V. asks which one; tap it here (or say it) */
+  let stylePick = null;
+  function pickStyle(topic, onPick) {
+    if (!topic) { if (stylePick) { stylePick = null; renderStyles(); } return; }
+    stylePick = { topic, onPick };
+    if (sheetName === 'files') renderStyles(); else { setNav('homeNav'); showFiles(); }
+  }
+  function styleChosen(name) {
+    toast('Style: ' + name);
+    if (liveOn && EV.live.open) EV.live.sendNote(`The user tapped the "${name}" style on the screen. The slides are being made now in that style (about a minute). Tell them so in one short, natural sentence.`);
+  }
+  function renderStyles() {
+    const B = $('styleBox'); if (!B) return;
+    if (!stylePick && !st.data.lastDeck) { B.innerHTML = ''; return; }
+    const tiles = EV.docs.THEMES.map(t => `<button class="sty" data-s="${t.id}" style="--b1:#${t.bg1};--b2:#${t.bg2};--a:#${t.accent};--a2:#${t.accent2};--tx:#${t.text}"><i><em></em><u></u></i><span>${esc(t.name)}</span></button>`).join('');
+    B.innerHTML = `<div class="card stycard${stylePick ? ' ask' : ''}"><small>${stylePick ? 'Pick a style' : 'Slide styles'}</small>
+      <b>${stylePick ? 'Which style for “' + esc(stylePick.topic) + '”?' : 'Tap one to remake your last presentation in it'}</b><div class="styles">${tiles}</div></div>`;
+    B.querySelector('.styles').onclick = e => {
+      const b = e.target.closest('.sty'); if (!b) return;
+      B.querySelectorAll('.sty').forEach(x => x.classList.toggle('on', x === b));
+      if (stylePick) { const p = stylePick; stylePick = null; Promise.resolve(p.onPick(b.dataset.s)).catch(er => toast(er.message)); }
+      else { toast('Restyling…'); EV.tools.run('presentation', { action: 'restyle', theme: b.dataset.s }).then(() => renderFiles()); }
+      setTimeout(renderStyles, 700);
+    };
+  }
+
+  /* Open: the file full screen inside E.V. (slides drawn in their style, PDF pages, photos, text) */
+  async function shareFile(id) {
+    const rec = await st.files.get(id); if (!rec) return toast('That file is gone.');
+    const file = new File([rec.blob], rec.name, { type: rec.type || rec.blob.type });
+    try { if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: rec.name });
+          else { const url = URL.createObjectURL(file), a = document.createElement('a'); a.href = url; a.download = rec.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000); } }
+    catch (e2) { if (e2.name !== 'AbortError') toast('Sharing failed: ' + e2.message); }
+  }
+  let viewerUrl = '';
+  function closeViewer() { const v = $('viewer'); if (v) v.remove(); if (viewerUrl) { URL.revokeObjectURL(viewerUrl); viewerUrl = ''; } }
+  async function openFile(id) {
+    const rec = await st.files.get(id); if (!rec) return toast('That file is gone.');
+    closeViewer();
+    const ext = (rec.name.split('.').pop() || '').toLowerCase(), v = document.createElement('div');
+    v.id = 'viewer'; v.className = 'viewer'; v.setAttribute('role', 'dialog'); v.setAttribute('aria-label', rec.name);
+    v.innerHTML = `<header><b>${esc(rec.name)}</b><button class="mini red" data-a="share">Share</button><button class="mini" data-a="close" aria-label="Close">Close</button></header><div class="vbody"><div class="empty">Opening…</div></div>`;
+    document.body.appendChild(v);
+    anim(v, [{ opacity: 0, transform: 'translateY(24px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: ease });
+    v.querySelector('header').onclick = e => { const b = e.target.closest('button'); if (!b) return; b.dataset.a === 'share' ? shareFile(id) : closeViewer(); };
+    const body = v.querySelector('.vbody');
+    try {
+      if (ext === 'pptx' && rec.meta && rec.meta.deck) {
+        body.innerHTML = EV.docs.deckHtml(rec.meta.deck, rec.meta.theme);
+        body.querySelectorAll('img[data-q]').forEach(async im => { const src = await EV.docs.wikiImage(im.dataset.q); if (src) im.src = src; else im.remove(); });
+      } else if (ext === 'pdf') {
+        await EV.docs.lib('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+        const lib = window.pdfjsLib; lib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        const pdf = await lib.getDocument({ data: new Uint8Array(await rec.blob.arrayBuffer()) }).promise;
+        body.innerHTML = '';
+        const W = Math.min(body.clientWidth || 360, 900) * Math.min(2, devicePixelRatio || 1);
+        for (let n = 1; n <= pdf.numPages && $('viewer') === v; n++) {
+          const pg = await pdf.getPage(n), vp0 = pg.getViewport({ scale: 1 }), vp = pg.getViewport({ scale: W / vp0.width });
+          const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height; body.appendChild(cv);
+          await pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+        }
+      } else if (/^(jpe?g|png|webp|gif)$/.test(ext)) {
+        viewerUrl = URL.createObjectURL(rec.blob); body.innerHTML = `<img class="pg" alt="" src="${viewerUrl}">`;
+      } else if (/^(txt|md|csv)$/.test(ext)) {
+        body.innerHTML = `<div class="vtext">${esc(await rec.blob.text())}</div>`;
+      } else {
+        body.innerHTML = '<div class="empty">This file can\'t be shown inside E.V. Tap Share, then pick an app to open it (PowerPoint, Keynote, Files…).</div>';
+      }
+    } catch (e) {
+      EV.log('open failed: ' + e.message);
+      if (ext === 'pdf') { viewerUrl = URL.createObjectURL(rec.blob); body.innerHTML = `<iframe class="pdfframe" title="${esc(rec.name)}" src="${viewerUrl}"></iframe>`; }
+      else body.innerHTML = '<div class="empty">Could not open it here (' + esc(e.message) + '). Tap Share to open it in another app.</div>';
+    }
+  }
+
   function renderFiles() {
+    renderStyles();
     const L = $('fileList'); if (!L) return;
     const J = jobs.map(j => `<div class="card"><small>${j.state === 'running' ? 'Working' : j.state === 'done' ? 'Done' : 'Failed'}</small><b>${esc(j.title)}</b><p>${esc(j.detail)}</p>${j.state === 'running' ? `<div class="prog"><i style="width:${Math.round(j.p * 100)}%"></i></div>` : ''}</div>`).join('');
     const F = st.files.list();
     L.innerHTML = J + (F.length ? F.map(f => { const ext = (f.name.split('.').pop() || '').toLowerCase();
       return `<div class="file" data-id="${f.id}"><span class="ic ${ext}">${ext.toUpperCase()}</span><span class="nm"><b>${esc(f.name)}</b><small>${new Date(f.created).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${Math.max(1, Math.round(f.size / 1024))} KB</small></span>
-        <button class="mini red" data-a="share">Share</button><button class="mini" data-a="del" aria-label="Delete">×</button></div>`; }).join('') : (J ? '' : '<div class="empty">Nothing yet. Ask for a presentation, a mind map, a PDF or some research.</div>'));
+        <button class="mini red" data-a="open">Open</button><button class="mini" data-a="share">Share</button><button class="mini" data-a="del" aria-label="Delete">×</button></div>`; }).join('') : (J ? '' : '<div class="empty">Nothing yet. Ask for a presentation, a mind map, a PDF or some research.</div>'));
     L.onclick = async e => {
       const b = e.target.closest('button'); if (!b) return; const id = b.closest('.file').dataset.id;
       if (b.dataset.a === 'del') { await st.files.del(id); renderFiles(); return; }
-      const rec = await st.files.get(id); if (!rec) return;
-      const file = new File([rec.blob], rec.name, { type: rec.type || rec.blob.type });
-      try { if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: rec.name });
-            else { const url = URL.createObjectURL(file), a = document.createElement('a'); a.href = url; a.download = rec.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000); } }
-      catch (e2) { if (e2.name !== 'AbortError') toast('Sharing failed: ' + e2.message); }
+      if (b.dataset.a === 'open') return openFile(id);
+      shareFile(id);
     };
   }
   $('pickConv').onchange = async e => {
@@ -806,7 +883,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
 
   /* ================= start ================= */
   EV.ui = { toast, openSheet: (n, d) => n === 'news' ? showNews(d) : n === 'expenses' ? showExpenses(d) : null, camera, job, announce,
-            tasksChanged, filesChanged, spotifyChanged, hero, timer, lecture, applyPalette,
+            tasksChanged, filesChanged, spotifyChanged, hero, timer, lecture, applyPalette, pickStyle, styleChosen, openFile, fileOffers: o => offers(o),
             sleep: () => { if (liveOn) setTimeout(() => EV.live.close('sleep'), 2500); V.stop(); setSense('sleeping'); }, killAll: () => { if (liveOn) EV.live.close('stop'); V.stop(); if (rec) rec.stop(true); timers.length = 0; focusEnd = null; jobs.forEach(j => j.cancelled = true); if (lec) lecture('stop'); camera.close(); } };
   applyPalette(); clock(); setInterval(clock, 15000); greet(); tasksChanged(); idleBrief(); setSense('idle'); net(); renderMic();
   if (isOff()) { setSense('sleeping'); $('offScreen').hidden = false; }
