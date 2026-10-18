@@ -60,8 +60,9 @@ VOICE CONVERSATION (sound like a real person on a call)
       tools: [{ googleSearch: {} }, { functionDeclarations: EV.tools.declarations().filter(d => d.name !== 'web_search') }],
       inputAudioTranscription: {}, outputAudioTranscription: {},
       // the user can interrupt by talking; the phone only lets real speech through while E.V. talks (see the mic below)
-      realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
-                                                         silenceDurationMs: 500, prefixPaddingMs: 200 } },
+      // catch soft speech, and let her pause to think (reading a question) without being cut off
+      realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+                                                         silenceDurationMs: 900, prefixPaddingMs: 300 } },
       contextWindowCompression: { slidingWindow: {} }          // long conversations and lectures don't run out of room
     } };
   }
@@ -139,32 +140,38 @@ VOICE CONVERSATION (sound like a real person on a call)
       let s = 0; for (let i = 0; i < d.length; i += 8) s += d[i] * d[i];
       const lv = Math.min(1, Math.sqrt(s / (d.length / 8)) * 9);
       micStats.peak = Math.max(micStats.peak, lv);
-      if (Date.now() - micStats.t > 5000) { EV.log(`live: mic level ${micStats.peak.toFixed(2)}, ${micStats.chunks} chunks sent`); micStats.t = Date.now(); micStats.peak = 0; }
+      if (Date.now() - micStats.t > 5000) { EV.log(`live: mic level ${micStats.peak.toFixed(2)}, ${micStats.chunks} chunks sent, voice ${voiceLv.toFixed(2)}, echo ${echoBase.toFixed(2)}`); micStats.t = Date.now(); micStats.peak = 0; }
       hooks.onLevel && hooks.onLevel(speakingNow ? 0 : lv);
       if (lv > 0.12) lastVoiceAt = Date.now();
       if (!ready) return;
       const n = Math.floor(d.length / ratio), pcm = new Int16Array(n);
       for (let i = 0; i < n; i++) { let a = 0, c = 0; for (let j = Math.floor(i * ratio); j < Math.floor((i + 1) * ratio); j++) { a += d[j]; c++; }
         const v = Math.max(-1, Math.min(1, a / (c || 1))); pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
-      const busy = (speakingNow || toolBusy > 0 || Date.now() < playUntil + 300) && Date.now() > bargeUntil;
-      if (!busy) { while (recent.length) sendChunk(recent.shift()); sendChunk(pcm); return; }
+      const busy = (speakingNow || toolBusy > 0 || Date.now() < playUntil + 250) && Date.now() > bargeUntil;
+      if (!busy) {
+        // what was held back while E.V. talked is mostly E.V.'s own voice from the speaker: only what came after it ends goes on
+        if (recent.length) { for (const c of recent) if (c.t > playUntil + 60) sendChunk(c.pcm); recent = []; }
+        if (lv > 0.1) voiceLv = voiceLv * 0.96 + lv * 0.04;              // learns how loud her voice is on this phone
+        sendChunk(pcm); return;
+      }
       // E.V. is talking or working: E.V.'s own voice and background noise stay out, but the user's voice
       // (clearly louder than the echo, for about a quarter of a second) stops E.V. and goes through
-      recent.push(pcm); if (recent.length > 12) recent.shift();          // last second, so the start of your words is kept
-      if (lv > Math.max(0.35, echoBase * 2.4)) loudFrames++;
+      recent.push({ pcm, t: Date.now() }); if (recent.length > 12) recent.shift();     // last second, so the start of your words is kept
+      // her voice counts when it is clearly above E.V.'s echo, judged against how loud SHE normally speaks
+      if (lv > Math.min(0.6, Math.max(0.15, echoBase * 2.4, voiceLv * 0.55))) loudFrames++;
       else { loudFrames = Math.max(0, loudFrames - 1); echoBase = echoBase * 0.9 + lv * 0.1; }   // short dips between words don't reset it
       if (loudFrames >= 4) {
         loudFrames = 0; EV.log('live: you interrupted E.V.');
         bargeUntil = Date.now() + 4000; dropAudio = true; pauseLecture();
         interrupt(); hooks.onInterrupted && hooks.onInterrupted();
-        while (recent.length) sendChunk(recent.shift());          // the start of what you said is not lost
+        while (recent.length) sendChunk(recent.shift().pcm);       // the start of what you said is not lost
       }
     };
     src.connect(proc); proc.connect(mctx.destination);
     mic = { stream, src, proc, mctx };
     stream.getAudioTracks()[0]?.addEventListener('ended', () => EV.log('live: the iPhone stopped the mic'));
   }
-  let recent = [], loudFrames = 0, echoBase = 0.05, bargeUntil = 0, toolBusy = 0, dropAudio = false;
+  let recent = [], loudFrames = 0, echoBase = 0.05, voiceLv = 0.4, bargeUntil = 0, toolBusy = 0, dropAudio = false;
   function sendChunk(pcm) { send({ realtimeInput: { audio: { data: EV.voice.b64(pcm.buffer), mimeType: 'audio/pcm;rate=16000' } } }); micStats.chunks++; }
   function stopMic() {
     if (!mic) return;
@@ -233,6 +240,7 @@ VOICE CONVERSATION (sound like a real person on a call)
   }
 
   /* typed messages go into the same conversation */
+  function addContext(text) { send({ clientContent: { turns: [{ role: 'user', parts: [{ text: '[System note, not from the user; do not reply to it] ' + text }] }], turnComplete: false } }); }
   function sendNote(text) { send({ clientContent: { turns: [{ role: 'user', parts: [{ text: '[System note, not from the user] ' + text }] }], turnComplete: true } }); bumpIdle(); }
   /* long lectures: one live answer stops after about 2 minutes, so E.V. is told to carry on until the time is up */
   const NUM = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, fifteen: 15, twenty: 20, half: 0.5 };
@@ -297,6 +305,6 @@ VOICE CONVERSATION (sound like a real person on a call)
   }
 
   let lastUserWords = '';
-  EV.live = { start, close, interrupt, sendText, sendNote, unlock, get lastUserWords() { return Date.now() - lastHeardAt < 60000 ? lastUserWords : ''; }, get open() { return !!ws; }, get speaking() { return speakingNow; },
+  EV.live = { start, close, interrupt, sendText, sendNote, addContext, unlock, get lastUserWords() { return Date.now() - lastHeardAt < 60000 ? lastUserWords : ''; }, get open() { return !!ws; }, get speaking() { return speakingNow; },
               get model() { return model.replace('models/', ''); }, get micOn() { return !!mic; } };
 })();

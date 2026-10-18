@@ -55,6 +55,7 @@
     if (o.action === 'camera') return showCamera();
     if (o.action === 'pick_image') { pendingQuestion = o.question; return $('pickImg').click(); }
     if (o.action === 'study_photo') { pendingStudy = o.args || { mode: 'question' }; return $('pickImg').click(); }
+    if (o.action === 'study_file') return runStudy(o.args || { mode: 'explain', source: 'file' });
     if (o.action === 'open_file') return openFile(o.id);
     if (o.action === 'share_file') return shareFile(o.id);
   }
@@ -188,6 +189,11 @@
     brief(text, { label: 'E.V.' }); offers(offs || []);
     setSense('speaking');
     return V.speak(text, { onend: () => { if (senseState === 'speaking') setSense('idle'); touch(); } });
+  }
+  function fileReady(text, offs) {                 // a finished file: shown quietly with Open / Share, never read out
+    brief(text, { label: 'E.V.' }); offers(offs || []); EV.agent.remember('ev', text);
+    try { navigator.vibrate?.(60); } catch (e) {}
+    if (liveOn && EV.live.open) EV.live.addContext(text + ' (shown on her screen with Open and Share buttons)');
   }
   let announceQ = [];
   function announce(text, offs) {                 // jobs finishing, reminders: speak when E.V. is free
@@ -379,23 +385,12 @@
   $('pickImg').onchange = async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) { pendingStudy = null; return; }
     const b64 = await shrink(f); close();
-    if (pendingStudy) {
-      const args = { ...pendingStudy, _image: b64 }; pendingStudy = null; offers([]);
-      setSense('thinking'); $('senseHint').textContent = 'Reading the question…';
-      try {
-        const r = await EV.tools.run('study', args);
-        if (r.question_explained) {
-          if (liveOn && EV.live.open) EV.live.sendNote('She picked a photo of a question. ' + r.instruction + ' Worked explanation: ' + r.question_explained);
-          else { EV.agent.remember('ev', r.question_explained); say(r.question_explained); }
-        } else { setSense(liveOn ? 'listening' : 'idle'); if (r.result) brief(r.result.split(' Meanwhile')[0], { label: 'E.V.' }); if (r.error) toast(r.error); }
-      } catch (er) { setSense('idle'); toast('Could not read the photo: ' + er.message); }
-      return;
-    }
+    if (pendingStudy) { const args = { ...pendingStudy, _image: b64 }; pendingStudy = null; return runStudy(args); }
     ask(pendingQuestion || 'Look at this picture and tell me what matters in it. If it is a screenshot, read it and tell me what I am looking at.', [{ b64, mime: 'image/jpeg' }]);
   };
-  function shrink(file) {
+  function shrink(file, max = 1600) {
     return new Promise((res, rej) => { const img = new Image(), url = URL.createObjectURL(file);
-      img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = img.width * k; c.height = img.height * k;
+      img.onload = () => { const k = Math.min(1, max / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = img.width * k; c.height = img.height * k;
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', .85).split(',')[1]); };
       img.onerror = rej; img.src = url; });
   }
@@ -410,7 +405,7 @@
   /* ---------- spotify ---------- */
   async function showSpotify() {
     const c = EV.spotify.connected();
-    open('Soundtrack.', `<div class="np" id="np"><div class="art"></div><div><b>${c ? 'Checking…' : 'Spotify not connected'}</b><span>${c ? '' : 'Connect it from the laptop install page, or use the box below to open Spotify.'}</span></div></div>
+    open('Soundtrack.', `<div class="np" id="np"><div class="art"></div><div><b>${c ? 'Checking…' : 'Spotify not connected'}</b><span>${c ? '' : 'Type a song below, or just ask E.V. to play it. It opens in Spotify.'}</span></div></div>
       <div class="controls"><button id="spPrev" aria-label="Previous">⏮</button><button class="big" id="spPlay" aria-label="Play or pause">⏯</button><button id="spNext" aria-label="Next">⏭</button></div>
       <form class="task-form" id="spForm"><input id="spQ" placeholder="Play… (song, artist, my gym playlist)" required><button>Play</button></form>`, 'spotify');
     const ctl = async a => { try { const r = await EV.spotify.control(a); if (r.needs_tap) offers([{ label: r.label || 'Open Spotify', url: r.open }]); toast(r.result || r.error); spotifyChanged(); } catch (e) { toast(e.message); } };
@@ -432,7 +427,7 @@
   function job(title) {
     const j = { id: st.uid(), title, p: 0, detail: 'Starting', state: 'running', cancelled: false,
       update(p, d) { j.p = p; j.detail = d || j.detail; render(); }, done(d) { j.state = 'done'; j.p = 1; j.detail = d; render(); setTimeout(() => { jobs.splice(jobs.indexOf(j), 1); render(); }, 60000); },
-      fail(msg) { j.state = 'failed'; j.detail = msg; render(); announce(title + ' failed: ' + msg); } };
+      fail(msg) { j.state = 'failed'; j.detail = msg; render(); brief(title + " didn't work: " + msg, { label: 'E.V.' }); toast(title + " didn't work."); } };
     const render = () => { renderJobs(); if (sheetName === 'files') renderFiles(); };
     jobs.unshift(j); render(); return j;
   }
@@ -440,8 +435,79 @@
     const run = jobs.filter(j => j.state === 'running').length, el = $('jobChip');
     el.hidden = !run; el.innerHTML = `<i></i>${run} job${run > 1 ? 's' : ''} running · Files`;
   }
-  function showFiles() { open('Your stash.', '<div id="styleBox"></div><div id="fileList"></div><div class="btns2"><button class="pri" id="mkPdf">Photos → one PDF</button><button id="fRefresh">Refresh</button></div>', 'files'); renderFiles();
-    $('mkPdf').onclick = () => $('pickConv').click(); $('fRefresh').onclick = renderFiles; }
+  function showFiles() { open('Your stash.', '<button class="upbtn" id="fUpload" type="button"><b>Upload photos or files</b><small>Assignments, worksheets, notes: photo, PDF, Word, PowerPoint or text</small></button><div id="styleBox"></div><div id="fileList"></div><div class="btns2"><button class="pri" id="mkPdf">Photos → one PDF</button><button id="fRefresh">Refresh</button></div>', 'files'); renderFiles();
+    $('mkPdf').onclick = () => $('pickConv').click(); $('fRefresh').onclick = renderFiles; $('fUpload').onclick = pickUploads; }
+
+  /* uploads: photos and assignment files she adds; E.V. notices them and can explain them */
+  function pickUploads() {
+    const i = document.createElement('input'); i.type = 'file'; i.multiple = true;
+    i.accept = 'image/*,.pdf,.docx,.doc,.pptx,.txt,.md,.csv,.rtf,application/pdf';
+    i.onchange = () => { const f = [...i.files]; if (f.length) uploadFiles(f); };
+    i.click();
+  }
+  async function unzipText(blob, test) {           // text of the matching XML files inside a .docx / .pptx
+    const b = new Uint8Array(await blob.arrayBuffer()), v = new DataView(b.buffer), dec = new TextDecoder();
+    let e = b.length - 22; while (e > 0 && v.getUint32(e, true) !== 0x06054b50) e--;
+    if (e <= 0) throw new Error('not a zip');
+    let p = v.getUint32(e + 16, true); const n = v.getUint16(e + 10, true), out = [];
+    for (let k = 0; k < n; k++) {
+      const method = v.getUint16(p + 10, true), size = v.getUint32(p + 20, true), nl = v.getUint16(p + 28, true), xl = v.getUint16(p + 30, true), cl = v.getUint16(p + 32, true);
+      const off = v.getUint32(p + 42, true), name = dec.decode(b.subarray(p + 46, p + 46 + nl)); p += 46 + nl + xl + cl;
+      if (!test(name)) continue;
+      const start = off + 30 + v.getUint16(off + 26, true) + v.getUint16(off + 28, true), raw = b.subarray(start, start + size);
+      const data = method === 8 ? new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer()) : raw;
+      out.push({ name, xml: dec.decode(data) });
+    }
+    return out;
+  }
+  const xmlText = (xml, para) => xml.replace(new RegExp('</' + para + '>', 'g'), '\n').replace(/<w:tab\/>/g, ' ').replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&').replace(/\n{3,}/g, '\n\n').trim();
+  async function readUpload(f) {                   // -> {blob, name, meta}
+    const ext = (f.name.split('.').pop() || '').toLowerCase(), base = f.name.replace(/\.[^.]+$/, '');
+    if (/^image\//.test(f.type) || /^(heic|heif|jpe?g|png|webp|gif)$/.test(ext)) {
+      const b64 = await shrink(f, 2000);
+      return { blob: await (await fetch('data:image/jpeg;base64,' + b64)).blob(), name: base + '.jpg', meta: { upload: true } };
+    }
+    if (ext === 'docx') { const x = await unzipText(f, n => n === 'word/document.xml'); return { blob: f, name: f.name, meta: { upload: true, text: x.length ? xmlText(x[0].xml, 'w:p') : '' } }; }
+    if (ext === 'pptx') {
+      const x = (await unzipText(f, n => /^ppt\/slides\/slide\d+\.xml$/.test(n))).sort((a, b) => parseInt(a.name.match(/\d+/)) - parseInt(b.name.match(/\d+/)));
+      return { blob: f, name: f.name, meta: { upload: true, text: x.map((s_, i) => 'Slide ' + (i + 1) + ':\n' + xmlText(s_.xml, 'a:p')).join('\n\n') } };
+    }
+    if (/^(txt|md|csv|rtf)$/.test(ext)) return { blob: f, name: f.name, meta: { upload: true, text: (await f.text()).replace(/\{\\[^{}]*\}|\\[a-z]+-?\d* ?/g, '') } };
+    return { blob: f, name: f.name, meta: { upload: true } };       // PDF (read by Gemini directly) or something E.V. can't read
+  }
+  async function uploadFiles(list) {
+    const got = [];
+    for (const f of list) {
+      try { const r = await readUpload(f); got.push({ id: await st.files.put(r.name, r.blob, 'upload', r.meta), name: r.name }); }
+      catch (e) { toast("Couldn't add " + f.name + ': ' + e.message); }
+    }
+    filesChanged(); if (!got.length) return;
+    EV.log('uploaded: ' + got.map(g => g.name).join(', '));
+    const short = n => n.replace(/\.[^.]+$/, '').replace(/_/g, ' ').slice(0, 40);
+    const what = got.length === 1 ? `"${short(got[0].name)}"` : got.length + ' files';
+    const offs = [{ label: 'Explain it', action: 'study_file', args: { mode: 'explain', source: 'file', file: got[0].id } },
+                  { label: 'Make Word notes', action: 'study_file', args: { mode: 'notes', source: 'file', file: got[0].id, output: 'docx' } }];
+    if (liveOn && EV.live.open) {
+      brief('Got ' + what + '.', { label: 'E.V.' }); offers(offs);
+      noteWhenFree(`She just uploaded ${got.length === 1 ? 'a file' : got.length + ' files'} to her stash: ${got.map(g => g.name).join(', ')}. Tell her in one short, natural sentence that you've got it, and ask what she'd like to know about it (you can explain it or make notes). Don't explain it yet. When she asks about it, use the study tool with source file.`);
+    } else { brief(`Got it, ${what} ${got.length === 1 ? 'is' : 'are'} in your stash. Want me to explain ${got.length === 1 ? 'it' : 'them'}, or make notes?`, { label: 'E.V.' }); offers(offs); try { navigator.vibrate?.(60); } catch (e) {} }
+  }
+  function noteWhenFree(text, tries = 0) {           // don't talk over E.V.'s current answer: mention it when she's quiet
+    if (!(liveOn && EV.live.open)) return;
+    if ((EV.live.speaking || senseState === 'thinking') && tries < 40) return setTimeout(() => noteWhenFree(text, tries + 1), 700);
+    EV.live.sendNote(text);
+  }
+  async function runStudy(args) {                   // a study button (photo or uploaded file) -> E.V. explains it
+    offers([]); setSense('thinking'); $('senseHint').textContent = args.source === 'file' ? 'Reading your file…' : 'Reading the question…';
+    try {
+      const r = await EV.tools.run('study', args), said = r.question_explained || r.explained;
+      if (said) {
+        if (liveOn && EV.live.open) EV.live.sendNote((r.file ? 'She asked about her file "' + r.file + '". ' : 'She picked a photo of a question. ') + r.instruction + ' Worked explanation: ' + said);
+        else { EV.agent.remember('ev', said); say(said); }
+      } else { setSense(liveOn ? 'listening' : 'idle'); if (r.result) brief(r.result.split(' Meanwhile')[0], { label: 'E.V.' }); if (r.error) { brief(r.error, { label: 'E.V.' }); toast(r.error); } }
+    } catch (er) { setSense('idle'); toast("Couldn't read it: " + er.message); }
+  }
   /* slide styles: the same 16 designs as the laptop. E.V. asks which one; tap it here (or say it) */
   let stylePick = null;
   function pickStyle(topic, onPick) {
@@ -507,6 +573,8 @@
         }
       } else if (/^(jpe?g|png|webp|gif)$/.test(ext)) {
         viewerUrl = URL.createObjectURL(rec.blob); body.innerHTML = `<img class="pg" alt="" src="${viewerUrl}">`;
+      } else if (rec.meta && rec.meta.text) {
+        body.innerHTML = `<div class="vtext">${esc(rec.meta.text)}</div>`;
       } else if (/^(txt|md|csv)$/.test(ext)) {
         body.innerHTML = `<div class="vtext">${esc(await rec.blob.text())}</div>`;
       } else {
@@ -525,7 +593,7 @@
     const J = jobs.map(j => `<div class="card"><small>${j.state === 'running' ? 'Working' : j.state === 'done' ? 'Done' : 'Failed'}</small><b>${esc(j.title)}</b><p>${esc(j.detail)}</p>${j.state === 'running' ? `<div class="prog"><i style="width:${Math.round(j.p * 100)}%"></i></div>` : ''}</div>`).join('');
     const F = st.files.list();
     L.innerHTML = J + (F.length ? F.map(f => { const ext = (f.name.split('.').pop() || '').toLowerCase();
-      return `<div class="file" data-id="${f.id}"><span class="ic ${ext}">${ext.toUpperCase()}</span><span class="nm"><b>${esc(f.name)}</b><small>${new Date(f.created).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${Math.max(1, Math.round(f.size / 1024))} KB</small></span>
+      return `<div class="file" data-id="${f.id}"><span class="ic ${ext}">${f.kind === 'upload' ? '↑' : ''}${ext.toUpperCase()}</span><span class="nm"><b>${esc(f.name)}</b><small>${new Date(f.created).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${Math.max(1, Math.round(f.size / 1024))} KB</small></span>
         <button class="mini red" data-a="open">Open</button><button class="mini" data-a="share">Share</button><button class="mini" data-a="del" aria-label="Delete">×</button></div>`; }).join('') : (J ? '' : '<div class="empty">Nothing yet. Ask for a presentation, a mind map, a PDF or some research.</div>'));
     L.onclick = async e => {
       const b = e.target.closest('button'); if (!b) return; const id = b.closest('.file').dataset.id;
@@ -577,8 +645,9 @@
 Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, "paragraphs": [str], "bullets": [str]}]} with sections: Summary, Key points, Action items, Questions to review.\n\n${transcript.slice(0, 80000)}`, { json: true });
         st.data.notes.unshift({ id: st.uid(), title: L.title, text: transcript, t: Date.now() }); st.save();
         const out = await EV.docs.pdf({ title: L.title, subtitle: 'Lecture notes by E.V.', sections: doc.sections });
-        await st.files.put(out.name, out.blob, 'pdf'); filesChanged();
-        j.done('Notes ready: ' + out.name); announce('Your notes for ' + L.title + ' are ready. ' + (doc.summary || ''));
+        const fid = await st.files.put(out.name, out.blob, 'pdf'); filesChanged();
+        j.done('Notes ready: ' + out.name);
+        fileReady('Your notes for ' + L.title + ' are ready. ' + (doc.summary || ''), [{ label: 'Open', action: 'open_file', id: fid }, { label: 'Share', action: 'share_file', id: fid }]);
       } catch (e) { j.fail(e.message); }
     })();
     return { result: 'Stopped recording. Writing the notes now.' };
@@ -592,7 +661,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     open('Under the mask.', `<p>${esc(head)}</p><pre id="diagText" style="white-space:pre-wrap;font-size:11px;line-height:1.5;background:#080e1d;border:1px solid #344564;border-radius:12px;padding:12px;max-height:46vh;overflow:auto;user-select:text;-webkit-user-select:text">${esc(lines.slice(-60).join('\n') || 'Nothing yet.')}</pre>
       <div class="btns2"><button class="pri" id="dCopy" type="button">Copy</button><button id="dVoice" type="button">Test both voices</button></div>`, 'diag');
     $('dCopy').onclick = async () => { const t = head + '\n' + lines.join('\n');
-      try { await navigator.clipboard.writeText(t); toast('Copied. Paste it to Claude on the laptop.'); }
+      try { await navigator.clipboard.writeText(t); toast('Copied. Send it to Zayan if something is wrong.'); }
       catch (e) { const r = document.createRange(); r.selectNodeContents($('diagText')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Selected. Tap Copy in the menu.'); } };
     $('dVoice').onclick = async () => {
       V.unlock(); const keep = st.data.settings.voiceEngine;
@@ -608,21 +677,21 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     open('Make it yours.', `
       <div class="row"><span>Your name<small>What E.V. calls you</small></span><input id="sName" value="${esc(s.name)}" style="background:#080e1d;border:1px solid #344564;color:#eff4ff;border-radius:10px;padding:8px 10px;font-size:15px;max-width:48%"></div>
       <div class="row"><span>Voice speed<small>${esc(V.voiceName())} · <b id="sRateOut">${(+s.rate).toFixed(2)}×</b></small></span><input type="range" id="sRate" min="0.8" max="1.6" step="0.05" value="${s.rate}"></div>
-      <div class="row"><span>E.V.'s voice<small id="sVoiceNow">${(s.voiceEngine || 'live') === 'live' ? 'Gemini Live: the laptop voice, no extra delay' : 'Now speaking with: ' + (V.speakingWith() === 'gemini' ? 'Gemini voice' : esc(V.voiceName()))}</small></span>
-        <select id="sEngine"><option value="live" ${(s.voiceEngine || 'live') === 'live' ? 'selected' : ''}>Gemini Live (laptop voice)</option><option value="auto" ${s.voiceEngine === 'auto' ? 'selected' : ''}>Ava, Gemini backup</option><option value="ava" ${s.voiceEngine === 'ava' ? 'selected' : ''}>Ava (iPhone)</option><option value="gemini" ${s.voiceEngine === 'gemini' ? 'selected' : ''}>Gemini voice (slower)</option></select></div>
+      <div class="row"><span>E.V.'s voice<small id="sVoiceNow">${(s.voiceEngine || 'live') === 'live' ? 'Gemini Live: natural voice, no extra delay' : 'Now speaking with: ' + (V.speakingWith() === 'gemini' ? 'Gemini voice' : esc(V.voiceName()))}</small></span>
+        <select id="sEngine"><option value="live" ${(s.voiceEngine || 'live') === 'live' ? 'selected' : ''}>Gemini Live (natural voice)</option><option value="auto" ${s.voiceEngine === 'auto' ? 'selected' : ''}>Ava, Gemini backup</option><option value="ava" ${s.voiceEngine === 'ava' ? 'selected' : ''}>Ava (iPhone)</option><option value="gemini" ${s.voiceEngine === 'gemini' ? 'selected' : ''}>Gemini voice (slower)</option></select></div>
       <div class="row"><span>Hear it<small>Silent? Flip the ring/silent switch to ring.</small></span><button class="mini red" id="sTest" type="button">Test voice</button></div>
       <label class="toggle-row">Microphone<input id="sMic" type="checkbox" ${micOn() ? 'checked' : ''}></label>
       <label class="toggle-row">Keep listening after E.V. answers<input id="sHands" type="checkbox" ${s.handsFree !== false ? 'checked' : ''}></label>
-      <div class="row"><span>Language<small>English unless you say otherwise</small></span><input id="sLang" value="${esc(s.language)}" style="background:#080e1d;border:1px solid #344564;color:#eff4ff;border-radius:10px;padding:8px 10px;font-size:15px;max-width:48%"></div>
+      <div class="row"><span>Language<small>Or just say "talk to me in Pashto"</small></span><select id="sLang">${['English', 'Urdu', 'Pashto'].concat(['English', 'Urdu', 'Pashto'].includes(s.language) ? [] : [s.language]).map(l => `<option ${l === s.language ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
       <label class="toggle-row">Symbiote palette<input id="darkToggle" type="checkbox" ${s.palette ? 'checked' : ''}></label>
       <div class="row"><span>Nag about late missions<small>minutes</small></span><input type="number" id="sNag" min="5" max="240" value="${s.remindEvery}"></div>
       <div class="row"><span>Fall asleep after<small>minutes of quiet (0 = never)</small></span><input type="number" id="sSleep" min="0" max="120" value="${s.autoSleep}"></div>
       <div class="sect">Brain</div>
       <div class="row"><span>Gemini key<small>${key ? 'Saved on this phone · ends …' + esc(key.slice(-4)) : 'Not set'}</small></span><button class="mini" id="sKey" type="button">Change</button></div>
       ${st.data.profile ? `<div class="row"><span>Personal welcome<small>For ${esc(st.data.profile.name || 'you')} · active</small></span><button class="mini" id="sWelcome" type="button">Show again</button></div>` : ''}
-      <div class="sect">From the laptop (one time)</div>
-      <div class="row"><span>Gift code or laptop code<small>Paste a gift code, or the 6-digit code from laptop E.V.</small></span><button class="mini" id="sImport" type="button">Enter code</button></div>
-      <div class="row"><span>Spotify<small>${EV.spotify.connected() ? 'Connected on this phone' : 'Not connected'}</small></span><button class="mini" id="sSpot" type="button">${EV.spotify.connected() ? 'Disconnect' : 'How to connect'}</button></div>
+      <div class="sect">Gift code</div>
+      <div class="row"><span>Gift code<small>Paste the gift code from Zayan</small></span><button class="mini" id="sImport" type="button">Enter code</button></div>
+      ${EV.spotify.connected() ? '<div class="row"><span>Spotify<small>Connected on this phone</small></span><button class="mini" id="sSpot" type="button">Disconnect</button></div>' : ''}
       <div class="sect">Contacts</div><div id="cList"></div>
       <form class="task-form" id="cAdd"><input id="cName" placeholder="Name" required><input id="cNum" placeholder="+92…" inputmode="tel" required><button>Add</button></form>
       <div class="sect">Backup</div>
@@ -631,7 +700,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
       <div class="row"><span>Updates<small id="uState">Phone E.V. ${esc(EV.VERSION)}</small></span><button class="mini" id="sUpd" type="button">Check</button></div>
       <div class="row"><span>Diagnostics<small>What happened recently. Copy it if something goes wrong.</small></span><button class="mini" id="sDiag" type="button">Open</button></div>`, 'settings');
     $('sEngine').onchange = e => { s.voiceEngine = e.target.value; V.resetAva(); st.save(); if (liveOn && s.voiceEngine !== 'live') EV.live.close('settings');
-      $('sVoiceNow').textContent = s.voiceEngine === 'live' ? 'Gemini Live: the laptop voice, no extra delay' : 'Now speaking with: ' + (V.speakingWith() === 'gemini' ? 'Gemini voice' : V.voiceName()); };
+      $('sVoiceNow').textContent = s.voiceEngine === 'live' ? 'Gemini Live: natural voice, no extra delay' : 'Now speaking with: ' + (V.speakingWith() === 'gemini' ? 'Gemini voice' : V.voiceName()); };
     $('sMic').onchange = e => { s.mic = e.target.checked; st.save(); renderMic(); };
     $('sHands').onchange = e => { s.handsFree = e.target.checked; st.save(); };
     $('sDiag').onclick = showDiagnostics;
@@ -646,7 +715,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     $('sKey').onclick = () => showSetup(true);
     $('sImport').onclick = () => importFromLaptop();
     if ($('sWelcome')) $('sWelcome').onclick = () => { close(); showWelcome(); };
-    $('sSpot').onclick = () => { if (EV.spotify.connected()) { st.data.spotify = null; save(); showSettings(); toast('Spotify disconnected on the phone.'); }
+    if ($('sSpot')) $('sSpot').onclick = () => { if (EV.spotify.connected()) { st.data.spotify = null; save(); showSettings(); toast('Spotify disconnected on the phone.'); }
       else open('Connect Spotify.', '<p>On the laptop, say <b>"Hey E.V., connect Spotify for my phone"</b> and log in. Then open the install page on the laptop and type its 6-digit code here under <b>Copy name, contacts, Spotify</b>.</p>', 'help'); };
     const renderC = () => { $('cList').innerHTML = st.data.contacts.length ? st.data.contacts.map((c, i) => `<div class="row"><span>${esc(c.name)}<small>${esc(c.number || c.email || '')}</small></span><button class="mini" data-i="${i}" type="button">Remove</button></div>`).join('') : '<div class="empty">No contacts yet.</div>';
       $('cList').onclick = e => { const i = e.target.dataset.i; if (i == null) return; st.data.contacts.splice(+i, 1); save(); renderC(); }; };
@@ -660,7 +729,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
   $('pickBackup').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     try { st.importJSON(await f.text()); toast('Backup restored.'); applyPalette(); greet(); tasksChanged(); close(); } catch (er) { toast(er.message); } };
   $('settings').onclick = () => { setNav('homeNav'); showSettings(); };
-  $('aboutNav').onclick = () => { setNav('aboutNav'); open('Hello, I’m E.V.', `<p>Your friendly neighbourhood assistant, living on this iPhone. Separate from laptop E.V., same attitude.</p>
+  $('aboutNav').onclick = () => { setNav('aboutNav'); open('Hello, I’m E.V.', `<p>Your friendly neighbourhood assistant, made by Zayan and living on this iPhone.</p>
     <div class="card"><small>I can</small><p>Talk (tap the mask), keep your missions and remind you, remember things about you, search the web and the news, do deep research, make presentations, mind maps and PDFs, read pages and identify things with the camera, look at screenshots, track expenses, record lectures, prayer times, timers, Hero mode, play Spotify, and get WhatsApp messages, texts, calls, e-mails and maps ready for you.</p></div>
     <div class="card"><small>iPhone won't let me</small><p>Send WhatsApp messages without your tap, control other apps or settings, see your screen live, listen for “Hey E.V.” or remind you while I'm closed.</p></div>
     <p>Brain: Google Gemini with your own key. Voice: ${esc(V.voiceName())}. Everything stays on this phone.</p>`, 'about'); };
@@ -712,10 +781,10 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     throw new Error('incomplete');
   }
   async function importFromLaptop(code) {
-    code = (code || prompt('Gift code, or the 6-digit code from laptop E.V.:') || '').trim();
+    code = (code || prompt('Paste the gift code:') || '').trim();
     const gift = !!giftIn(code);
     if (gift) code = giftIn(code);
-    if (!gift) { code = code.replace(/\D/g, ''); if (code.length !== 6) { if (code) toast('That is not a gift code or a 6-digit code.'); return; } }
+    if (!gift) { code = code.replace(/\D/g, ''); if (code.length !== 6) { if (code) toast("That isn't the gift code. Copy the whole code and try again."); return; } }
     try {
       let j;
       if (gift) { try { j = readGift(code); } catch (e) { throw new Error('the gift code is incomplete. Copy the whole code and try again'); } }
@@ -752,12 +821,12 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     };
   }
 
-  /* ---------- updates (only when the laptop is reachable) ---------- */
+  /* ---------- updates (from the internet) ---------- */
   async function checkUpdate() {
     const s = $('uState'); if (s) s.textContent = 'Checking…';
     try { const reg = await navigator.serviceWorker?.getRegistration(); if (!reg) throw new Error('offline copy not set up');
       await reg.update(); if (s) s.textContent = reg.installing || reg.waiting ? 'Update downloaded. Close and reopen E.V.' : 'You have the latest version (' + EV.VERSION + ')'; }
-    catch (e) { if (s) s.textContent = 'Laptop not reachable. Updates come from the laptop when it is on.'; }
+    catch (e) { if (s) s.textContent = "Couldn't check right now. Updates arrive by themselves when you're online."; }
   }
 
   /* ================= reminders, nagging, auto-sleep ================= */
@@ -782,7 +851,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
     try { if ('Notification' in window && Notification.permission === 'granted') navigator.serviceWorker?.ready.then(r => r.showNotification(title, { body, icon: 'icons/icon-192.png', tag: 'ev' })); } catch (e) {}
   }
 
-  /* ================= Gemini Live: the laptop's voice, streamed like a call ================= */
+  /* ================= Gemini Live: natural voice, streamed like a call ================= */
   const useLive = () => (st.data.settings.voiceEngine || 'live') === 'live';
   let liveOn = false, liveOffers = [], heardTimer = null;
   function liveHooks() {
@@ -914,7 +983,7 @@ Return JSON {"summary": str (3 spoken sentences), "sections": [{"heading": str, 
 
   /* ================= start ================= */
   EV.ui = { toast, openSheet: (n, d) => n === 'news' ? showNews(d) : n === 'expenses' ? showExpenses(d) : null, camera, job, announce,
-            tasksChanged, filesChanged, spotifyChanged, hero, timer, lecture, applyPalette, pickStyle, styleChosen, openFile, fileOffers: o => offers(o),
+            tasksChanged, filesChanged, uploadFiles, fileReady, spotifyChanged, hero, timer, lecture, applyPalette, pickStyle, styleChosen, openFile, fileOffers: o => offers(o),
             sleep: () => { if (liveOn) setTimeout(() => EV.live.close('sleep'), 2500); V.stop(); setSense('sleeping'); }, killAll: () => { if (liveOn) EV.live.close('stop'); V.stop(); if (rec) rec.stop(true); timers.length = 0; focusEnd = null; jobs.forEach(j => j.cancelled = true); if (lec) lecture('stop'); camera.close(); } };
   applyPalette(); clock(); setInterval(clock, 15000); greet(); tasksChanged(); idleBrief(); setSense('idle'); net(); renderMic();
   if (isOff()) { setSense('sleeping'); $('offScreen').hidden = false; }

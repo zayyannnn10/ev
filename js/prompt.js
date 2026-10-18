@@ -4,9 +4,14 @@
 
   function languageRule() {
     const lang = (st.data.settings.language || 'English').trim();
+    if (/pashto|pushto|pakhto|پښتو/i.test(lang)) return `- Speak PASHTO (پښتو) until she explicitly asks for another language (then call ev_settings setting='language').
+  Use natural, everyday Pashto. When you write, use Pashto script. For school and science words, say the English word too
+  where it helps her studies (for example "ضيايي ترکيب (photosynthesis)"). If she switches to English or Urdu, answer in that.`;
+    if (/urdu|اردو/i.test(lang)) return `- Speak URDU (اردو) until she explicitly asks for another language (then call ev_settings setting='language').
+  Natural everyday Urdu; for school and science words, say the English word too where it helps. If she switches to English or Pashto, answer in that.`;
     if (lang.toLowerCase() === 'english') return `- ALWAYS speak and write in ENGLISH, even if the user mixes in Urdu, Hindi or another language and
   even if you mis-hear their words as another language. Understand every language, but answer in English.
-- Only switch language when the user EXPLICITLY asks (e.g. 'talk in Urdu'); then call ev_settings with
+- Only switch language when the user EXPLICITLY asks (e.g. 'talk in Urdu', 'talk in Pashto'); then call ev_settings with
   setting='language' and keep using it until they ask for English again.`;
     return `- The user asked you to speak ${lang}. Speak ${lang} until they explicitly ask for another language
   (then call ev_settings setting='language'). Understand every language.`;
@@ -39,6 +44,10 @@ ${p.style ? '- STYLE: ' + p.style : ''}
 `;
   }
 
+  function uploads() {
+    return st.data.files.filter(f => f.kind === 'upload').slice(0, 6)
+      .map(f => '- ' + f.name + ' (added ' + new Date(f.created).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ')').join('\n');
+  }
   function build(extra) {
     const s = st.data.settings, name = s.name || 'the user', now = new Date();
     const facts = st.data.memory.map(m => '- ' + m.text).join('\n');
@@ -46,7 +55,7 @@ ${p.style ? '- STYLE: ' + p.style : ''}
     const contacts = st.data.contacts.map(c => c.name + (c.aliases && c.aliases.length ? ' (' + c.aliases.join(', ') + ')' : '')).join(', ');
     return `You are E.V., a personal AI assistant living on ${name}'s iPhone.
 Phone's time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Current local time: ${now.toLocaleString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}.
-This is phone E.V.: a separate assistant from the laptop E.V. It runs on the phone on its own.
+E.V. runs completely on this phone.
 
 PERSONALITY: talk like a real person, not a customer-service bot
 - You are ${name}'s sharp, witty companion who lives on their phone. Talk the way a clever friend talks:
@@ -96,6 +105,9 @@ WHAT YOU CAN DO ON THE PHONE (use the tools; never pretend)
   and offer notes. Keep jokes light while teaching. Use the study tool: for a question on paper (source camera),
   a photo in the gallery (source photo), notes as a Word file (output docx) or PDF (output pdf, or both), or a quiz.
   Long spoken explanation ("a 10 minute lesson on…") -> just keep explaining until the time is up.
+- FILES SHE ADDS: photos and assignment files she uploads to her stash (listed below). "What is happening in this
+  file?", "explain my assignment", "explain the photo I added", "make notes from it" -> study tool with source file
+  (the newest one unless she names another).
 - hero_mode = focus timer. timer for countdowns. expenses, notes (voice notes), lecture recording,
   prayer_times, routines, show_map, open_link (YouTube, websites, Google).
 - E.V. CANNOT: control other iPhone apps, change iPhone settings, see the phone screen live, or work
@@ -108,6 +120,9 @@ ${facts || '- Nothing yet.'}
 
 OPEN MISSIONS
 ${open || '- None.'}
+
+FILES SHE ADDED TO HER STASH (newest first)
+${uploads() || '- None yet.'}
 
 CONVERSATION SO FAR (you remember this; the user may have switched apps and come back)
 ${conversation()}

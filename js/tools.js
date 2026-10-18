@@ -203,7 +203,7 @@ Return JSON {"title": str, "summary": str (3-4 sentences, spoken style), "sectio
           const uniq = [...new Map(sources.filter(s => s.url).map(s => [s.url, s])).values()].slice(0, 25);
           const names = await saveFile(await EV.docs.pdf({ title: doc.title || a.topic, subtitle: 'Research report by E.V. · ' + new Date().toLocaleDateString('en-GB'), sections: doc.sections, sources: uniq }), 'pdf');
           job.done('Report ready: ' + names[0]);
-          ui().announce(`Your research on ${a.topic} is done. ${doc.summary || ''} The full report is in your stash.`, openShare(names));
+          ui().fileReady(`Your research on ${a.topic} is done. ${doc.summary || ''} The full report is in your stash.`, openShare(names));
         } catch (e) { job.fail(e.message); }
       })();
       return { result: 'Research started. It shows in Files while it runs; I\'ll tell you when the report is ready. Keep E.V. open.' };
@@ -229,22 +229,38 @@ Return JSON {"title": str, "sections": [{"heading": str, "paragraphs": [str], "b
     quiz: 'Questions (10, mixed multiple choice and short answer, numbered in "steps"); Answers (each answer with a one-line reason, in "steps")',
     topic: 'The big idea (in simple words); Breaking it down (each part as a bullet "Part: what it means"); How it works, step by step (in "steps"); Everyday example; Key terms (bullets "Term: meaning"); Common mistakes; Quick recap (3-5 bullets); Test yourself (3-5 questions with the answers in brackets)',
   };
-  async function studyDoc(a, img) {
+  const blobB64 = b => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(b); });
+  async function uploadParts(want) {               // a photo or file she added to her stash -> what Gemini can read
+    const all = st.files.list(), up = all.filter(f => f.kind === 'upload');
+    const w = lc(want || '');
+    const f = (w && (all.find(x => x.id === want) || up.find(x => lc(x.name).includes(w)) || up.find(x => w.split(/\s+/).some(t => t.length > 3 && lc(x.name).includes(t))))) || up[0];
+    if (!f) throw new Error('There is no uploaded file yet. Tap "Upload photos or files" in your stash first.');
+    const rec = await st.files.get(f.id), type = rec.type || rec.blob.type || '', ext = (f.name.split('.').pop() || '').toLowerCase();
+    if (/^image\//.test(type)) return { name: f.name, parts: [{ inlineData: { mimeType: 'image/jpeg', data: await blobB64(rec.blob) } }] };
+    if (ext === 'pdf' || type === 'application/pdf') {
+      if (rec.blob.size > 18e6) throw new Error('That PDF is too big to read at once (over 18 MB). Try a smaller part of it.');
+      return { name: f.name, parts: [{ inlineData: { mimeType: 'application/pdf', data: await blobB64(rec.blob) } }] };
+    }
+    if (rec.meta && rec.meta.text) return { name: f.name, parts: [{ text: 'CONTENT OF THE FILE "' + f.name + '":\n' + rec.meta.text.slice(0, 80000) }] };
+    throw new Error(`I can't read ${ext ? '.' + ext : 'this kind of'} files. Save it as a PDF, a Word file (.docx) or a photo and upload it again.`);
+  }
+  async function studyDoc(a, img, fileParts) {
     const kind = a.mode === 'question' ? 'question' : a.mode === 'quiz' ? 'quiz' : 'topic';
-    const what = a.mode === 'question' ? (a.question || (img ? 'the question in the picture' : a.topic)) : (a.topic || a.question);
+    const what = a.mode === 'question' ? (a.question || (img ? 'the question in the picture' : fileParts ? 'the attached file' : a.topic)) : (a.topic || a.question || (fileParts ? 'the attached file' : ''));
     const prompt = `You are a kind, clear tutor making study notes for a student.
 ${kind === 'question' ? 'Explain this question and how to solve it' : kind === 'quiz' ? 'Make a practice quiz on' : 'Topic'}: ${what}
-${LEVEL[a.level] || LEVEL.easy} Write in English unless the topic is in another language. Short sentences, simple words. Put key terms in **bold**. Be accurate; never invent facts.
+${fileParts ? 'Work from the file she uploaded (attached): explain what it is about and what is happening in it; for an assignment, what each question asks and how to approach it.\n' : ''}${LEVEL[a.level] || LEVEL.easy} Write in ${/english/i.test(st.data.settings.language || 'English') ? 'English' : st.data.settings.language + ' (with the English words for school terms)'} unless the topic is in another language. Short sentences, simple words. Put key terms in **bold**. Be accurate; never invent facts.
 Use these sections (adapt or drop any that don't fit): ${SECTIONS[kind]}.${img ? '\nThe question is in the picture: read it carefully first (handwriting too) and quote it in the first section.' : ''}
 Return JSON {"title": str (short), "one_line": str (the whole idea or answer in one simple sentence), "sections": [{"heading": str, "paragraphs": [str], "bullets": [str], "steps": [str]}]}`;
-    const doc = await G.ask(prompt, { json: true, parts: img ? [{ inlineData: { mimeType: 'image/jpeg', data: img } }] : [] });
+    const doc = await G.ask(prompt, { json: true, parts: fileParts || (img ? [{ inlineData: { mimeType: 'image/jpeg', data: img } }] : []) });
     doc.title = doc.title || what || 'Study notes';
     doc.subtitle = (kind === 'quiz' ? 'Practice quiz' : 'Study notes') + ' by E.V. · ' + new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
     return doc;
   }
-  def('study', "Study help (the main reason she uses E.V.): explain or break down a topic simply, explain a question and what is happening in it (typed, on paper with the camera, or a photo from her gallery), make study notes as a Word file (docx) or PDF, or a practice quiz. output voice (default) = you explain it out loud yourself; docx / pdf / both = also make the notes file (only when she asks for notes, a file, Word, docx or PDF). source camera when the question is on paper in front of the camera, photo when it is a picture in her gallery.",
+  def('study', "Study help (the main reason she uses E.V.): explain or break down a topic simply, explain a question and what is happening in it (typed, on paper with the camera, or a photo from her gallery), make study notes as a Word file (docx) or PDF, or a practice quiz. output voice (default) = you explain it out loud yourself; docx / pdf / both = also make the notes file (only when she asks for notes, a file, Word, docx or PDF). source camera when the question is on paper in front of the camera, photo when it is a picture in her gallery, file for a photo or assignment file she UPLOADED to her stash (newest unless she names it in file).",
     obj({ mode: str('', ['explain', 'breakdown', 'question', 'notes', 'quiz']), topic: str('the topic or subject'), question: str('the question, if she typed or said it'),
-          level: str('', ['brief', 'easy', 'detailed']), output: str('', ['voice', 'docx', 'pdf', 'both']), source: str('', ['text', 'camera', 'photo']) }, ['mode']),
+          level: str('', ['brief', 'easy', 'detailed']), output: str('', ['voice', 'docx', 'pdf', 'both']), source: str('', ['text', 'camera', 'photo', 'file']),
+          file: str('which uploaded file (words from its name); empty = the newest') }, ['mode']),
     async a => {
       let img = a._image || null; const out = a.output || (a.mode === 'notes' ? 'docx' : 'voice');
       if (a.source === 'camera' && !img) {
@@ -252,27 +268,34 @@ Return JSON {"title": str (short), "one_line": str (the whole idea or answer in 
         if (!img) return { needs_tap: true, label: 'Open camera', action: 'camera', result: 'Tap "Open camera", point it at the question, then ask again.' };
       }
       if (a.source === 'photo' && !img) return { needs_tap: true, label: 'Choose the photo', action: 'study_photo', args: { ...a, source: 'photo' }, result: 'Tap "Choose the photo" and pick the picture of the question.' };
+      let file = null;
+      if (a.source === 'file') file = await uploadParts(a.file);
       if (out === 'voice') {
         const how = 'Teach like a kind, clear tutor: first the big idea in one simple sentence, then break it into small parts in simple words with an everyday example, then a short recap. '
           + (a.mode === 'question' ? 'For a question: say what it is asking, the idea behind it, go through the steps one by one, give the answer, then a quick tip. Explain HOW to get the answer, not only the answer. ' : '')
           + ({ brief: 'Keep it brief: about thirty seconds.', detailed: 'Go into detail, like a short lesson.' }[a.level] || 'Keep it easy and clear, about a minute.')
           + ' At the end, check she understood ("Does that make sense?") and offer Word or PDF notes.';
+        if (file) {
+          const ex = await G.ask(`You are a kind, clear tutor. She uploaded the attached file ("${file.name}") and asks: ${a.question || a.topic || 'what is happening in this file? Explain it to me.'}
+Read it carefully (handwriting too). Explain what it is about and what is happening in it in simple words; for an assignment or questions, say what each one asks, the ideas behind it and how to approach it step by step, with answers if she asks for them. ${LEVEL[a.level] || LEVEL.easy} Plain text, no markdown.`, { parts: file.parts });
+          return { file: file.name, explained: ex.slice(0, 6000), instruction: how + ' Use this explanation of her file and say it in your own natural spoken words.' };
+        }
         if (!img) return { how_to_explain: how, instruction: 'Explain it yourself now, out loud, in that way. Speak naturally; no lists read out.' };
         const ex = await G.vision(`You are a kind tutor. Read the question in this picture carefully (handwriting too). Then explain: what it is asking, the idea behind it, the steps to solve it one by one, the answer, and a short tip. ${LEVEL[a.level] || LEVEL.easy} Plain text, no markdown.`, img);
         return { question_explained: ex.slice(0, 4000), instruction: how + ' Use this worked explanation and say it in your own natural spoken words, step by step.' };
       }
-      const job = ui().job((a.mode === 'quiz' ? 'Quiz: ' : 'Notes: ') + (a.topic || a.question || 'your question'));
+      const job = ui().job((a.mode === 'quiz' ? 'Quiz: ' : 'Notes: ') + (a.topic || a.question || (file && file.name) || 'your question'));
       (async () => {
         try {
           job.update(.2, 'Writing the notes');
-          const doc = await studyDoc(a, img);
+          const doc = await studyDoc(a, img, file && file.parts);
           job.update(.75, out === 'pdf' ? 'Making the PDF' : 'Making the Word file');
           let first = null;
           if (out === 'docx' || out === 'both') first = await saveFile(await EV.docs.docx(doc), 'docx', { doc });
           if (out === 'pdf' || out === 'both') { const n = await saveFile(await EV.docs.pdf(doc), 'pdf', { doc }); first = first || n; }
           job.done('Ready: ' + first[0]);
           const kind = out === 'both' ? 'as a Word file and a PDF' : out === 'pdf' ? 'as a PDF' : 'as a Word file';
-          ui().announce(`Your ${a.mode === 'quiz' ? 'quiz' : 'notes'} on ${doc.title} ${a.mode === 'quiz' ? 'is' : 'are'} ready ${kind}. ${doc.one_line || ''}`, openShare(first));
+          ui().fileReady(`Your ${a.mode === 'quiz' ? 'quiz' : 'notes'} on ${doc.title} ${a.mode === 'quiz' ? 'is' : 'are'} ready ${kind}. ${doc.one_line || ''}`, openShare(first));
         } catch (e) { job.fail(e.message); }
       })();
       return { result: `Making the ${out === 'both' ? 'Word and PDF' : out === 'pdf' ? 'PDF' : 'Word'} ${a.mode === 'quiz' ? 'quiz' : 'notes'} now (about half a minute). Meanwhile explain the main idea to her out loud in two or three simple sentences.` };
@@ -298,7 +321,7 @@ Return JSON {"title": str (short), "one_line": str (the whole idea or answer in 
   async function restyle(theme, tapped) {
     const out = await EV.docs.presentation(st.data.lastDeck, theme);
     const names = await saveFile(out, 'pptx', { deck: st.data.lastDeck, theme: out.themeId });
-    if (tapped) ui().announce(`Done, your presentation is now in ${out.theme}.`, openShare(names)); else ui().fileOffers(openShare(names));
+    if (tapped) ui().fileReady(`Done, your presentation is now in ${out.theme}.`, openShare(names)); else ui().fileOffers(openShare(names));
     return { result: `Restyled in ${out.theme}: ${names[0]}. Open and Share buttons are on the screen.` };
   }
   function makeDeck(a, tapped) {
@@ -322,7 +345,7 @@ Return JSON: {"title": str, "subtitle": str, "slides": [{"layout": str, ...field
           const out = await EV.docs.presentation(deck, a.theme || 'E.V. Night', (i, n) => job.update(.3 + .6 * i / n, 'Slide ' + (i + 1) + ' of ' + n));
           const names = await saveFile(out, 'pptx', { deck, theme: out.themeId });
           job.done('Slides ready: ' + names[0]);
-          ui().announce(`Your presentation on ${a.topic} is ready, ${deck.slides.length} slides in ${out.theme}. Tap Open to see it, or Share to send or save it.`, openShare(names));
+          ui().fileReady(`Your presentation on ${a.topic} is ready, ${deck.slides.length} slides in ${out.theme}. Tap Open to see it, or Share to send or save it.`, openShare(names));
         } catch (e) { job.fail(e.message); }
       })();
       return { result: `Making the slides now in ${EV.docs.findTheme(a.theme).name}. They appear in the stash in about a minute.` };
@@ -345,7 +368,7 @@ Return JSON: {"title": str, "branches": [{"name": str, "children": [{"name": str
           await new Promise(r => setTimeout(r, 50));
           const names = await saveFile(await EV.docs.mindmap(spec.branches ? spec : { title: a.topic, branches: spec }, !!a.jpg), 'pdf');
           job.done('Mind map ready: ' + names.join(', '));
-          ui().announce(`Your mind map on ${a.topic} is ready, with the 3D views. It's in your stash.`, openShare(names));
+          ui().fileReady(`Your mind map on ${a.topic} is ready, with the 3D views. It's in your stash.`, openShare(names));
         } catch (e) { job.fail(e.message); }
       })();
       return { result: 'Drawing the mind map. It appears in Files in a moment.' };

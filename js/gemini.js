@@ -159,7 +159,7 @@
   async function tts(textIn) {
     const key = st.key.get(), models = await discover(key);
     const list = (models.tts && models.tts.length ? models.tts : ['gemini-2.5-flash-preview-tts']).filter(m => !(cool[m] > Date.now()));
-    const body = { contents: [{ role: 'user', parts: [{ text: 'Say this with a British accent (polished Londoner), crisp, warm and composed, at a normal, natural pace: ' + textIn }] }],
+    const body = { contents: [{ role: 'user', parts: [{ text: textIn }] }],          // only the words: an instruction here was sometimes read out loud
       generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Vindemiatrix' } } } } };
     let last;
     for (const m of list) {
