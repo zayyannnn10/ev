@@ -169,3 +169,9 @@
 .doc .callout{background:#fff1f3;border-left:4px solid #e11d48;padding:10px 12px;font-weight:600;border-radius:4px}
 .doc h2{color:#e11d48;font-size:17px;margin:22px 0 6px}.doc p{margin:0 0 10px}
 .doc ul,.doc ol{margin:0 0 12px;padding-left:22px}.doc li{margin-bottom:6px}.doc ol li::marker{color:#e11d48;font-weight:700}
+
+/* stash: upload photos and assignment files */
+.upbtn{display:block;width:100%;text-align:left;padding:14px 16px;margin:4px 0 6px;border-radius:14px;border:1.5px dashed #ee2948;background:#ee29481a;color:#fff;font:inherit}
+.upbtn b{display:block;font-size:15px}.upbtn small{display:block;color:#c7d1ea;font-size:12px;margin-top:3px}
+.upbtn:active{transform:scale(.98)}
+#sLang{background:#080e1d;border:1px solid #344564;color:#eff4ff;border-radius:10px;padding:8px 10px;font-size:15px}
